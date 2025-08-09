@@ -1,6 +1,6 @@
 {
   "name": "optima-db",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "module": "src/index.ts",
   "devDependencies": {
     "@types/bun": "latest"
