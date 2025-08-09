@@ -13,9 +13,17 @@ export type PartialRowOf<TDef extends OptimaTableDef<Record<string, any>>> =
   Partial<RowOf<TDef>>;
 
 // Keys that are NOT NULL and do not have a default should be required in Insert
-export type RequiredInsertKeys<TDef extends OptimaTableDef<Record<string, any>>> = {
-  [K in keyof TDef]-?: TDef[K] extends OptimaField<any, infer TNotNull extends boolean, any>
-    ? (TNotNull extends true ? K : never)
+export type RequiredInsertKeys<
+  TDef extends OptimaTableDef<Record<string, any>>
+> = {
+  [K in keyof TDef]-?: TDef[K] extends OptimaField<
+    any,
+    infer TNotNull extends boolean,
+    any
+  >
+    ? TNotNull extends true
+      ? K
+      : never
     : never;
 }[keyof TDef];
 
@@ -49,12 +57,11 @@ export type WhereInput<TDef extends OptimaTableDef<Record<string, any>>> =
       $and?: WhereInput<TDef>[];
     });
 
-export type GetOptions<
-  TDef extends OptimaTableDef<Record<string, any>>
-> = {
+export type GetOptions<TDef extends OptimaTableDef<Record<string, any>>> = {
   Limit?: number;
   Offset?: number;
   Unique?: boolean;
+  Extend?: string[] | string;
   OrderBy?: {
     Column: keyof RowOf<TDef> & string;
     Direction: "ASC" | "DESC";
@@ -86,7 +93,9 @@ export class OptimaDB<S extends Record<string, OptimaTableDef<any>>> {
         (tables as any)[tableName] = new OptimaTable(
           this.InternalDB,
           tableName,
-          tableDef
+          tableDef,
+          Schema,
+          this
         );
       }
     }
@@ -101,19 +110,46 @@ export class OptimaDB<S extends Record<string, OptimaTableDef<any>>> {
 export class OptimaTable<TDef extends OptimaTableDef<Record<string, any>>> {
   private Name: string = "UNKNOWN";
   private InternalDBRefrance: Database;
+  private InternalOptimaDBRefrance: OptimaDB<any>;
+
   private Schema: TDef;
   private Meta: OptimaTableMeta;
   private extendRelationships: Map<string, any> = new Map();
-  private Validate(Op: "INSERT" | "UPDATE" | "DELETE" | "SELECT" | "COUNT") {}
-  private InitTable() {
+  private InitTable(Tables: any) {
     this.InternalDBRefrance.query(this.Meta.toSQL()).run();
+
+    // PreComute Relations
+    for (const table of Object.keys(Tables)) {
+      if (table == this.Name) continue;
+      const tableSchema = (Tables as Record<string, any>)[table];
+      for (const Column of Object.keys(tableSchema)) {
+        const ColumnSchema = tableSchema[Column];
+        if (
+          ColumnSchema.Reference &&
+          ColumnSchema.Reference.Table == this.Name
+        ) {
+          this.extendRelationships.set(table, {
+            ExternalField: Column,
+            InternalField: ColumnSchema.Reference.Field,
+            Type: ColumnSchema.Reference.Type,
+          });
+        }
+      }
+    }
   }
-  constructor(InternalDB: Database, TableName: string, SchemaTable: TDef) {
+  constructor(
+    InternalDB: Database,
+    TableName: string,
+    SchemaTable: TDef,
+    TablesToCompute: any,
+    OptimaDBRef: OptimaDB<any>
+  ) {
     this.InternalDBRefrance = InternalDB;
+    this.InternalOptimaDBRefrance = OptimaDBRef;
     this.Schema = SchemaTable;
     this.Meta = (SchemaTable as any)[TABLE_META] as OptimaTableMeta;
     this.Name = this.Meta?.Name || TableName;
-    this.InitTable();
+    this.InitTable(TablesToCompute);
   }
 
   private mapOutRow = (row: any) => {
@@ -244,14 +280,11 @@ export class OptimaTable<TDef extends OptimaTableDef<Record<string, any>>> {
               typeof value === "object" &&
               !Array.isArray(value)
             ) {
-              const innerOps = Object.entries(value);
-              for (const [innerOp, innerVal] of innerOps) {
-                const beforeLen = params.length;
-                compileColumnOp(column, innerOp, innerVal);
-                // Wrap the last appended condition with NOT (...)
-                const lastPart = parts.pop();
-                if (lastPart) parts.push(`NOT (${lastPart})`);
-                // params remain as compiled
+              // Build a single combined expression for this column and negate it
+              const compiled = buildForObject({ [column]: value });
+              if (compiled.part) {
+                parts.push(`NOT (${compiled.part})`);
+                params.push(...compiled.params);
               }
             } else if (Array.isArray(value)) {
               const placeholders = value.map(() => "?").join(", ");
@@ -371,7 +404,63 @@ export class OptimaTable<TDef extends OptimaTableDef<Record<string, any>>> {
       ...params,
       ...extraParams
     );
-    return rows.map((r: any) => this.mapOutRow(r));
+    let CleenRows = rows.map((r: any) => this.mapOutRow(r));
+    if (options?.Extend != undefined) {
+      if (Array.isArray(options.Extend)) {
+        options.Extend.forEach((e) => {
+          if (this.extendRelationships.has(e)) {
+            CleenRows = CleenRows.map((r: any) => {
+              const Table = e as string;
+              const Relation = this.extendRelationships.get(Table);
+              let Data;
+              if (Relation.Type == "MANY") {
+                Data = this.InternalOptimaDBRefrance.Tables[Table]?.Get({
+                  [Relation.ExternalField]: r[Relation.InternalField],
+                });
+              } else {
+                Data = this.InternalOptimaDBRefrance.Tables[Table]?.GetOne({
+                  [Relation.ExternalField]: r[Relation.InternalField],
+                });
+              }
+              return { ...r, ["$" + e]: Data };
+            });
+          } else {
+            throw new Error(
+              "Table " +
+                this.Name +
+                " Doesn't have a realation to the table " +
+                e
+            );
+          }
+        });
+      } else {
+        if (this.extendRelationships.has(options.Extend)) {
+          CleenRows = CleenRows.map((r: any) => {
+            const Table = options.Extend as string;
+            const Relation = this.extendRelationships.get(Table);
+            let Data;
+            if (Relation.Type == "MANY") {
+              Data = this.InternalOptimaDBRefrance.Tables[Table]?.Get({
+                [Relation.ExternalField]: r[Relation.InternalField],
+              });
+            } else {
+              Data = this.InternalOptimaDBRefrance.Tables[Table]?.GetOne({
+                [Relation.ExternalField]: r[Relation.InternalField],
+              });
+            }
+            return { ...r, ["$" + options.Extend]: Data };
+          });
+        } else {
+          throw new Error(
+            "Table " +
+              this.Name +
+              " Doesn't have a realation to the table " +
+              options.Extend
+          );
+        }
+      }
+    }
+    return CleenRows;
   };
   /**
    * Fetch a single row matching the optional WHERE filter.
@@ -393,10 +482,21 @@ export class OptimaTable<TDef extends OptimaTableDef<Record<string, any>>> {
       const notNull = field?.isNotNullField?.() === true;
       if (notNull) {
         if (!valueProvided) {
-          throw new Error(`Missing required field: ${String(key)} on insert into ${this.Name}`);
+          throw new Error(
+            `Missing required field: ${String(key)} on insert into ${this.Name}`
+          );
         }
-        if ((Values as any)[key] === null || (Values as any)[key] === undefined) {
-          throw new Error(`Field ${String(key)} is NOT NULL and must be provided with a non-null value in ${this.Name}`);
+        if (
+          (Values as any)[key] === null ||
+          (Values as any)[key] === undefined
+        ) {
+          throw new Error(
+            `Field ${String(
+              key
+            )} is NOT NULL and must be provided with a non-null value in ${
+              this.Name
+            }`
+          );
         }
       }
     }
@@ -428,7 +528,9 @@ export class OptimaTable<TDef extends OptimaTableDef<Record<string, any>>> {
       };
       if (field?.isNotNullField?.() && (values as any)[key] === null) {
         throw new Error(
-          `Field ${String(key)} is NOT NULL and cannot be set to null in ${this.Name}`
+          `Field ${String(key)} is NOT NULL and cannot be set to null in ${
+            this.Name
+          }`
         );
       }
     }
@@ -476,8 +578,8 @@ export class OptimaTable<TDef extends OptimaTableDef<Record<string, any>>> {
     return row ? row.count : 0;
   };
   Batch = (fn: Function) => {
-    this.InternalDBRefrance.run("BEGIN TRANSACTION");
-    fn();
-    this.InternalDBRefrance.run("COMMIT");
+    this.InternalDBRefrance.run("BEGIN");
+    try { fn(); this.InternalDBRefrance.run("COMMIT"); }
+    catch (e) { this.InternalDBRefrance.run("ROLLBACK"); throw e; }
   };
 }
