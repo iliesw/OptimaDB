@@ -1,6 +1,8 @@
 import { Database } from "bun:sqlite";
 import { TABLE_META } from "./schema";
 import type { OptimaTableDef, OptimaTableMeta, OptimaField } from "./schema";
+import * as fs from "node:fs";
+import * as path from "node:path";
 
 // ---------- Typing helpers for great DX ----------
 export type FieldRuntimeType<F> = F extends OptimaField<infer T, any, any>
@@ -77,12 +79,68 @@ export class OptimaDB<S extends Record<string, OptimaTableDef<any>>> {
   private InternalDB: Database;
   public Tables: OptimaTablesFromSchema<S>;
 
-  constructor(Schema: S, path?: string) {
-    this.Path = path ?? "";
-    this.InternalDB = path
-      ? new Database(path + "/db.sqlite", { create: true })
-      : new Database(":memory:");
+  // Hybrid/Mode support
+  private Mode: "disk" | "memory" | "hybrid" = "memory";
+  private SchemaRef: S;
+  private SaveDebounceTimer: any = null;
+  private SaveIntervalTimer: any = null;
+  private AutosaveEnabled: boolean = false;
+  private AutosaveDebounceMs: number = 1500;
+  private AutosaveIntervalMs: number = 30000;
+  private onSigInt?: () => void;
+  private onSigTerm?: () => void;
+  private onBeforeExit?: () => void;
+  private onUncaughtException?: (err: any) => void;
+
+  constructor(
+    Schema: S,
+    options?:
+      | string
+      | {
+          mode?: "disk" | "memory" | "hybrid";
+          path?: string;
+          autosave?: {
+            enabled?: boolean;
+            debounceMs?: number;
+            intervalMs?: number;
+          };
+        }
+  ) {
+    this.SchemaRef = Schema;
+
+    // Interpret constructor overload
+    if (typeof options === "string") {
+      this.Mode = "disk";
+      this.Path = options;
+    } else if (typeof options === "object" && options) {
+      this.Mode = options.mode ?? (options.path ? "disk" : "memory");
+      this.Path = options.path ?? "";
+      if (options.autosave) {
+        this.AutosaveEnabled = options.autosave.enabled ?? true;
+        if (typeof options.autosave.debounceMs === "number")
+          this.AutosaveDebounceMs = options.autosave.debounceMs;
+        if (typeof options.autosave.intervalMs === "number")
+          this.AutosaveIntervalMs = options.autosave.intervalMs;
+      } else {
+        this.AutosaveEnabled = this.Mode === "hybrid";
+      }
+    } else {
+      this.Mode = "memory";
+      this.Path = "";
+      this.AutosaveEnabled = false;
+    }
+
+    // Open the primary database connection
+    if (this.Mode === "disk") {
+      const dbFile = this.ensureDbPath();
+      this.InternalDB = new Database(dbFile, { create: true });
+    } else {
+      this.InternalDB = new Database(":memory:");
+    }
     this.InternalDB.exec("PRAGMA journal_mode = WAL;"); // Enable WAL MODE
+    // Help avoid SQLITE_BUSY on Windows when other processes touch the file
+    try { this.InternalDB.exec("PRAGMA busy_timeout = 5000;"); } catch {}
+
     const tables = {} as OptimaTablesFromSchema<S>;
     for (const tableName in Schema) {
       if (
@@ -106,10 +164,63 @@ export class OptimaDB<S extends Record<string, OptimaTableDef<any>>> {
       const t = (this.Tables as any)[tableName] as OptimaTable<any>;
       t.MigrateSchema();
     }
+
+    // If hybrid, import from disk and start autosave timers/handlers
+    if (this.Mode === "hybrid") {
+      this.loadFromDiskIfExists();
+      this.startAutosaveInterval();
+      this.installSignalHandlers();
+    }
   }
 
   Close = () => {
-    this.InternalDB.close(true);
+    // Stop background activity first to avoid races
+    try {
+      if (this.SaveDebounceTimer) clearTimeout(this.SaveDebounceTimer);
+      if (this.SaveIntervalTimer) clearInterval(this.SaveIntervalTimer);
+      this.SaveDebounceTimer = null;
+      this.SaveIntervalTimer = null;
+    } catch {}
+    this.uninstallSignalHandlers();
+    try {
+      if (this.Mode === "hybrid") {
+        this.saveToDiskSafe();
+        // Open the saved file briefly to fully release WAL/SHM on Windows
+        try {
+          const finalFile = path.join(this.Path ? this.Path : ".", "db.sqlite");
+          if (fs.existsSync(finalFile)) {
+            const db = new Database(finalFile, { create: false });
+            try { db.exec("PRAGMA busy_timeout = 5000;"); } catch {}
+            try { db.exec("PRAGMA wal_checkpoint(TRUNCATE);"); } catch {}
+            try { db.exec("PRAGMA journal_mode = DELETE;"); } catch {}
+            try { db.exec("PRAGMA optimize;"); } catch {}
+            try { db.close(true); } catch {}
+          }
+        } catch {}
+      }
+    } catch {
+      // ignore close-time save errors
+    }
+    // On Windows, WAL sidecar files can appear "locked" if not checkpointed.
+    // Checkpoint and switch back to DELETE journaling before closing the handle.
+    try {
+      if (this.Mode === "disk") {
+        try { this.InternalDB.exec("PRAGMA wal_checkpoint(TRUNCATE);"); } catch {}
+        try { this.InternalDB.exec("PRAGMA journal_mode = DELETE;"); } catch {}
+        try { this.InternalDB.exec("PRAGMA optimize;"); } catch {}
+      }
+    } catch {}
+    // Retry-close if busy
+    let lastErr: any;
+    for (let i = 0; i < 3; i++) {
+      try { this.InternalDB.close(true); return; }
+      catch (e) {
+        lastErr = e;
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50);
+      }
+    }
+    // throw last error if still failing
+    throw lastErr;
   };
 
   /**
@@ -123,6 +234,209 @@ export class OptimaDB<S extends Record<string, OptimaTableDef<any>>> {
       table.MigrateSchema(renameMap);
     }
   };
+
+  // Manual snapshot to disk (hybrid only). No-op in other modes.
+  public SaveNow(): void {
+    this.saveToDiskSafe();
+  }
+
+  // ---------- Hybrid helpers ----------
+  private ensureDbPath(): string {
+    const base = this.Path ? this.Path : ".";
+    try { fs.mkdirSync(base, { recursive: true }); } catch {}
+    return path.join(base, "db.sqlite");
+  }
+
+  private escapeSqlStringLiteral(p: string): string {
+    return p.replace(/'/g, "''");
+  }
+
+  private defaultLiteralForField(field: any): string {
+    try {
+      const hasDefault = typeof field?.hasDefaultValue === "function" ? field.hasDefaultValue() : false;
+      if (!hasDefault) return "NULL";
+      const rawDefault = typeof field?.getDefaultValue === "function" ? field.getDefaultValue() : undefined;
+      const formatted = typeof field?.applyFormatIn === "function" ? field.applyFormatIn(rawDefault) : rawDefault;
+      if (formatted === null || formatted === undefined) return "NULL";
+      if (typeof formatted === "number") return String(formatted);
+      if (typeof formatted === "boolean") return formatted ? "1" : "0";
+      const asString = String(formatted);
+      const escaped = asString.replace(/'/g, "''");
+      return `'${escaped}'`;
+    } catch {
+      return "NULL";
+    }
+  }
+
+  private loadFromDiskIfExists() {
+    if (!this.Path) return;
+    const dbFile = this.ensureDbPath();
+    if (!fs.existsSync(dbFile)) return;
+
+    const escaped = this.escapeSqlStringLiteral(dbFile);
+    this.InternalDB.run("BEGIN");
+    try {
+      this.InternalDB.exec(`ATTACH '${escaped}' AS disk;`);
+      // For each table defined in the schema, import from disk if present
+      for (const tableName in this.Tables) {
+        const desiredSchema = (this.SchemaRef as any)[tableName];
+        if (!desiredSchema) continue;
+
+        const existsRow = this.InternalDB
+          .query("SELECT name FROM disk.sqlite_master WHERE type='table' AND name = ?")
+          .get(tableName) as { name?: string } | undefined;
+        if (!existsRow || existsRow.name !== tableName) continue;
+
+        const rows = this.InternalDB
+          .query(`PRAGMA disk.table_info("${tableName}")`)
+          .all() as Array<{ name: string }>;
+        const diskCols = rows.map(r => r.name);
+        const desiredCols = Object.keys(desiredSchema);
+
+        const selectExprs: string[] = [];
+        const targetCols: string[] = [];
+        for (const col of desiredCols) {
+          targetCols.push(`"${col}"`);
+          if (diskCols.includes(col)) {
+            selectExprs.push(`"${col}"`);
+          } else {
+            const field = (desiredSchema as any)[col];
+            const literal = this.defaultLiteralForField(field);
+            selectExprs.push(`${literal} AS "${col}"`);
+          }
+        }
+
+        // Import data
+        const insertSQL = `INSERT INTO "${tableName}" (${targetCols.join(", ")}) SELECT ${selectExprs.join(", ")} FROM disk."${tableName}"`;
+        this.InternalDB.exec(insertSQL);
+      }
+      // Commit the import transaction before detaching the file DB
+      this.InternalDB.run("COMMIT");
+      // After commit, ensure attached DB is checkpointed and not left in WAL
+      try { this.InternalDB.exec("PRAGMA disk.wal_checkpoint(TRUNCATE);"); } catch {}
+      try { this.InternalDB.exec("PRAGMA disk.journal_mode = DELETE;"); } catch {}
+      this.InternalDB.exec("DETACH disk;");
+    } catch (e) {
+      try { this.InternalDB.run("ROLLBACK"); } catch {}
+      try { this.InternalDB.exec("DETACH disk;"); } catch {}
+      throw e;
+    }
+  }
+
+  private saveToDiskViaVacuum(): void {
+    const base = this.Path ? this.Path : ".";
+    try { fs.mkdirSync(base, { recursive: true }); } catch {}
+    const tmpFile = path.join(base, "db.sqlite.tmp");
+    const finalFile = path.join(base, "db.sqlite");
+    const escapedTmp = this.escapeSqlStringLiteral(tmpFile);
+    this.InternalDB.exec(`VACUUM INTO '${escapedTmp}';`);
+    try {
+      if (fs.existsSync(finalFile)) fs.rmSync(finalFile, { force: true });
+    } catch {}
+    fs.renameSync(tmpFile, finalFile);
+    // Post-process the written file to avoid leftover WAL/SHM on Windows
+    try {
+      const tmpDb = new Database(finalFile, { create: true });
+      try { tmpDb.exec("PRAGMA busy_timeout = 5000;"); } catch {}
+      try { tmpDb.exec("PRAGMA wal_checkpoint(TRUNCATE);"); } catch {}
+      try { tmpDb.exec("PRAGMA journal_mode = DELETE;"); } catch {}
+      try { tmpDb.exec("PRAGMA optimize;"); } catch {}
+      try { tmpDb.close(true); } catch {}
+    } catch {}
+  }
+
+  private saveToDiskViaAttach(): void {
+    const base = this.Path ? this.Path : ".";
+    try { fs.mkdirSync(base, { recursive: true }); } catch {}
+    const finalFile = path.join(base, "db.sqlite");
+    const escaped = this.escapeSqlStringLiteral(finalFile);
+
+    this.InternalDB.run("BEGIN");
+    try {
+      this.InternalDB.exec(`ATTACH '${escaped}' AS disk;`);
+      // Recreate each table on disk with current schema and copy data
+      for (const tableName in this.Tables) {
+        const desiredSchema = (this.SchemaRef as any)[tableName];
+        if (!desiredSchema) continue;
+
+        // Drop existing disk table and recreate
+        this.InternalDB.exec(`DROP TABLE IF EXISTS disk."${tableName}";`);
+        const colDefs = Object.entries(desiredSchema).map(([colName, field]: any) => `"${colName}" ${field["toSQL"]?.()}`);
+        const createSQL = `CREATE TABLE disk."${tableName}" (\n  ${colDefs.join(",\n  ")}\n);`;
+        this.InternalDB.exec(createSQL);
+
+        const cols = Object.keys(desiredSchema).map(c => `"${c}"`).join(", ");
+        this.InternalDB.exec(`INSERT INTO disk."${tableName}" (${cols}) SELECT ${cols} FROM main."${tableName}";`);
+      }
+      // Commit first, then run pragmas and detach outside the transaction
+      this.InternalDB.run("COMMIT");
+      try { this.InternalDB.exec("PRAGMA disk.wal_checkpoint(TRUNCATE);"); } catch {}
+      try { this.InternalDB.exec("PRAGMA disk.journal_mode = DELETE;"); } catch {}
+      this.InternalDB.exec("DETACH disk;");
+    } catch (e) {
+      try { this.InternalDB.run("ROLLBACK"); } catch {}
+      try { this.InternalDB.exec("DETACH disk;"); } catch {}
+      throw e;
+    }
+  }
+
+  private saveToDisk(): void {
+    if (this.Mode !== "hybrid") return;
+    try {
+      this.saveToDiskViaVacuum();
+    } catch {
+      this.saveToDiskViaAttach();
+    }
+  }
+
+  private saveToDiskSafe(): void {
+    try { this.saveToDisk(); } catch (e) { /* swallow */ }
+  }
+
+  public scheduleSave(): void {
+    if (this.Mode !== "hybrid") return;
+    if (!this.AutosaveEnabled) return;
+    try { if (this.SaveDebounceTimer) clearTimeout(this.SaveDebounceTimer); } catch {}
+    this.SaveDebounceTimer = setTimeout(() => {
+      this.saveToDiskSafe();
+    }, this.AutosaveDebounceMs);
+  }
+
+  private startAutosaveInterval(): void {
+    if (this.Mode !== "hybrid") return;
+    if (!this.AutosaveEnabled) return;
+    if (this.AutosaveIntervalMs && this.AutosaveIntervalMs > 0) {
+      try { if (this.SaveIntervalTimer) clearInterval(this.SaveIntervalTimer); } catch {}
+      this.SaveIntervalTimer = setInterval(() => this.saveToDiskSafe(), this.AutosaveIntervalMs);
+    }
+  }
+
+  private installSignalHandlers(): void {
+    const attempt = () => { try { this.saveToDiskSafe(); } catch {} };
+    this.onSigInt = attempt;
+    this.onSigTerm = attempt;
+    this.onBeforeExit = attempt;
+    this.onUncaughtException = (err: any) => { try { this.saveToDiskSafe(); } catch {}; };
+    try {
+      (process as any)?.on?.("SIGINT", this.onSigInt);
+      (process as any)?.on?.("SIGTERM", this.onSigTerm);
+      (process as any)?.on?.("beforeExit", this.onBeforeExit);
+      (process as any)?.on?.("uncaughtException", this.onUncaughtException);
+    } catch {}
+  }
+
+  private uninstallSignalHandlers(): void {
+    try {
+      if (this.onSigInt) (process as any)?.off?.("SIGINT", this.onSigInt);
+      if (this.onSigTerm) (process as any)?.off?.("SIGTERM", this.onSigTerm);
+      if (this.onBeforeExit) (process as any)?.off?.("beforeExit", this.onBeforeExit);
+      if (this.onUncaughtException) (process as any)?.off?.("uncaughtException", this.onUncaughtException);
+    } catch {}
+    this.onSigInt = undefined;
+    this.onSigTerm = undefined;
+    this.onBeforeExit = undefined;
+    this.onUncaughtException = undefined;
+  }
 }
 
 export class OptimaTable<TDef extends OptimaTableDef<Record<string, any>>> {
@@ -532,7 +846,9 @@ export class OptimaTable<TDef extends OptimaTableDef<Record<string, any>>> {
       }
       return raw;
     });
-    return stmt.run(...formattedValues);
+    const res = stmt.run(...formattedValues);
+    try { this.InternalOptimaDBRefrance.scheduleSave?.(); } catch {}
+    return res;
   };
 
   /**
@@ -573,7 +889,9 @@ export class OptimaTable<TDef extends OptimaTableDef<Record<string, any>>> {
       whereBuilt.clause
     }`;
     const stmt = this.InternalDBRefrance.prepare(sql);
-    return stmt.run(...setParams, ...whereBuilt.params);
+    const res = stmt.run(...setParams, ...whereBuilt.params);
+    try { this.InternalOptimaDBRefrance.scheduleSave?.(); } catch {}
+    return res;
   };
 
   /**
@@ -583,7 +901,9 @@ export class OptimaTable<TDef extends OptimaTableDef<Record<string, any>>> {
     const whereBuilt = this.buildWhereClause(where as any);
     const sql = `DELETE FROM "${this.Name}"${whereBuilt.clause}`;
     const stmt = this.InternalDBRefrance.prepare(sql);
-    return stmt.run(...whereBuilt.params);
+    const res = stmt.run(...whereBuilt.params);
+    try { this.InternalOptimaDBRefrance.scheduleSave?.(); } catch {}
+    return res;
   };
   /**
    * Count rows, optionally with typed WHERE.
@@ -597,7 +917,7 @@ export class OptimaTable<TDef extends OptimaTableDef<Record<string, any>>> {
   };
   Batch = (fn: Function) => {
     this.InternalDBRefrance.run("BEGIN");
-    try { fn(); this.InternalDBRefrance.run("COMMIT"); }
+    try { fn(); this.InternalDBRefrance.run("COMMIT"); try { this.InternalOptimaDBRefrance.scheduleSave?.(); } catch {} }
     catch (e) { this.InternalDBRefrance.run("ROLLBACK"); throw e; }
   };
 
