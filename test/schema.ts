@@ -19,7 +19,7 @@ export const Profile = Table("Profile", {
     default: 0,
   }),
   Bio: Json(),
-  Wins: Array()
+  Win: Array()
 });
 
 export const Posts = Table("Posts", {

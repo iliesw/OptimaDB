@@ -100,10 +100,28 @@ export class OptimaDB<S extends Record<string, OptimaTableDef<any>>> {
       }
     }
     this.Tables = tables;
+
+    // Auto-migrate at startup to match in-code schema (no renames by default)
+    for (const tableName in this.Tables) {
+      const t = (this.Tables as any)[tableName] as OptimaTable<any>;
+      t.MigrateSchema();
+    }
   }
 
   Close = () => {
     this.InternalDB.close(true);
+  };
+
+  /**
+   * Migrate all tables to match the provided in-code schema.
+   * Pass optional rename maps: { [tableName]: { oldCol: newCol } }
+   */
+  Migrate = (renames?: Partial<{ [K in keyof S & string]: Record<string, string> }>) => {
+    for (const tableName in this.Tables) {
+      const table = (this.Tables as any)[tableName] as OptimaTable<any>;
+      const renameMap = (renames as any)?.[tableName] as Record<string, string> | undefined;
+      table.MigrateSchema(renameMap);
+    }
   };
 }
 
@@ -581,5 +599,151 @@ export class OptimaTable<TDef extends OptimaTableDef<Record<string, any>>> {
     this.InternalDBRefrance.run("BEGIN");
     try { fn(); this.InternalDBRefrance.run("COMMIT"); }
     catch (e) { this.InternalDBRefrance.run("ROLLBACK"); throw e; }
+  };
+
+  /**
+   * Returns true if the underlying table exists in the database.
+   */
+  private tableExists = (): boolean => {
+    const row = this.InternalDBRefrance
+      .query("SELECT name FROM sqlite_master WHERE type='table' AND name = ?")
+      .get(this.Name) as { name?: string } | undefined;
+    return !!row && row.name === this.Name;
+  };
+
+  /**
+   * Get current columns for this table from the database using PRAGMA table_info.
+   */
+  private getExistingColumns = () => {
+    if (!this.tableExists()) return [] as Array<{ name: string; type: string | null; notnull: number; dflt_value: any; pk: number }>;
+    const rows = this.InternalDBRefrance
+      .query(`PRAGMA table_info("${this.Name}")`)
+      .all() as Array<{ cid: number; name: string; type: string | null; notnull: number; dflt_value: any; pk: number }>;
+    return rows;
+  };
+
+  /**
+   * Build a CREATE TABLE statement for a specific name using the in-code schema definition.
+   */
+  private buildCreateSQLFor = (name: string): string => {
+    const colDefs = Object.entries(this.Schema).map(([colName, field]) => {
+      // Access the internal SQL builder the same way Table() does
+      const def = (field as any)["toSQL"]?.();
+      return `"${colName}" ${def}`;
+    });
+    return `CREATE TABLE "${name}" (\n  ${colDefs.join(",\n  ")}\n);`;
+  };
+
+  /**
+   * Attempt to derive a SQL literal for a field's default value suitable for SELECT expressions.
+   */
+  private defaultLiteralForField = (field: any): string => {
+    try {
+      const hasDefault = typeof field?.hasDefaultValue === "function" ? field.hasDefaultValue() : false;
+      if (!hasDefault) return "NULL";
+      const rawDefault = typeof field?.getDefaultValue === "function" ? field.getDefaultValue() : undefined;
+      const formatted = typeof field?.applyFormatIn === "function" ? field.applyFormatIn(rawDefault) : rawDefault;
+      if (formatted === null || formatted === undefined) return "NULL";
+      if (typeof formatted === "number") return String(formatted);
+      if (typeof formatted === "boolean") return formatted ? "1" : "0";
+      // Treat everything else as string
+      const asString = String(formatted);
+      const escaped = asString.replace(/'/g, "''");
+      return `'${escaped}'`;
+    } catch {
+      return "NULL";
+    }
+  };
+
+  /**
+   * Migrate this table to match the in-code schema. Supports:
+   * - Column renames via rename map (oldName -> newName)
+   * - Column additions (new columns get their default or NULL)
+   * - Column deletions (data for those columns is dropped)
+   *
+   * Strategy: Rebuild table with the desired schema, copy data, drop old, rename new.
+   */
+  MigrateSchema = (renameColumns?: Record<string, string>) => {
+    const existing = this.getExistingColumns();
+    const desiredColumns = Object.keys(this.Schema);
+
+    // If table doesn't exist yet, just create it using the normal initializer and return.
+    if (!this.tableExists()) {
+      this.InternalDBRefrance.exec(this.buildCreateSQLFor(this.Name));
+      return;
+    }
+
+    // Build rename maps in both directions for convenience
+    const oldToNew = new Map<string, string>();
+    const newToOld = new Map<string, string>();
+    if (renameColumns) {
+      for (const [oldName, newName] of Object.entries(renameColumns)) {
+        oldToNew.set(oldName, newName);
+        newToOld.set(newName, oldName);
+      }
+    }
+
+    const existingNames = new Set(existing.map((c) => c.name));
+
+    // Detect if a rebuild is necessary by comparing column sets (after considering renames)
+    const normalizedExistingNames = new Set(
+      Array.from(existingNames).map((n) => oldToNew.get(n) ?? n)
+    );
+    const desiredNameSet = new Set(desiredColumns);
+
+    let requiresRebuild = false;
+    // Check name-level differences
+    for (const n of desiredNameSet) if (!normalizedExistingNames.has(n)) requiresRebuild = true;
+    for (const n of normalizedExistingNames) if (!desiredNameSet.has(n)) requiresRebuild = true;
+
+    // If sets match, we could still differ on constraints/types; rebuild to be safe.
+    // To avoid unnecessary churn, you could diff types via PRAGMA table_info, but we prefer safety here.
+    // If you want to skip in that case, comment the next line.
+    // Keep rebuild on by default to ensure constraints are applied.
+    requiresRebuild = requiresRebuild || true;
+
+    if (!requiresRebuild) return;
+
+    const tempName = `__tmp__${this.Name}`;
+
+    this.InternalDBRefrance.run("BEGIN");
+    try {
+      this.InternalDBRefrance.run("PRAGMA foreign_keys = OFF");
+
+      // Create temp table with desired schema
+      const createSQL = this.buildCreateSQLFor(tempName);
+      this.InternalDBRefrance.exec(createSQL);
+
+      // Build column copy mapping
+      const targetCols: string[] = [];
+      const selectExprs: string[] = [];
+      for (const newCol of desiredColumns) {
+        targetCols.push(`"${newCol}"`);
+        const mappedOld = newToOld.get(newCol) ?? newCol;
+        if (existingNames.has(mappedOld)) {
+          selectExprs.push(`"${mappedOld}"`);
+        } else {
+          const field = (this.Schema as any)[newCol];
+          const literal = this.defaultLiteralForField(field);
+          selectExprs.push(`${literal} AS "${newCol}"`);
+        }
+      }
+
+      if (existing.length > 0) {
+        const insertSQL = `INSERT INTO "${tempName}" (${targetCols.join(", ")}) SELECT ${selectExprs.join(", ")} FROM "${this.Name}"`;
+        this.InternalDBRefrance.exec(insertSQL);
+      }
+
+      // Replace old table
+      this.InternalDBRefrance.exec(`DROP TABLE IF EXISTS "${this.Name}"`);
+      this.InternalDBRefrance.exec(`ALTER TABLE "${tempName}" RENAME TO "${this.Name}"`);
+
+      this.InternalDBRefrance.run("PRAGMA foreign_keys = ON");
+      this.InternalDBRefrance.run("COMMIT");
+    } catch (e) {
+      try { this.InternalDBRefrance.run("ROLLBACK"); } catch {}
+      try { this.InternalDBRefrance.run("PRAGMA foreign_keys = ON"); } catch {}
+      throw e;
+    }
   };
 }

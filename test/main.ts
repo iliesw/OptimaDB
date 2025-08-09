@@ -1,14 +1,21 @@
 import { OptimaDB } from "./../src";
 import * as Schema from "./schema";
 
-const DB = new OptimaDB(Schema);
+const DB = new OptimaDB(Schema, "data");
 
-// Seed sample rows with varying numeric values
-for (let i = 0; i < 10; i++) {
-  DB.Tables.Profile.Insert({
-    ID:1
-  });
-}
+DB.Tables.Profile.Insert({
+  ID: 0,
+  Bio: { name: "John", age: 30, car: null },
+  Likes:500,
+  UserID:1,
+  Win:[1,2,3,4,5,6,7,8,9]
+});
 
-
-console.log(DB.Tables.Profile.Get());
+console.log(
+  DB.Tables.Profile.Get(
+    {},
+    {
+      Limit: 5,
+    }
+  )
+);
