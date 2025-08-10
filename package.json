@@ -1,6 +1,6 @@
 {
   "name": "optima-db",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "module": "src/index.ts",
   "license": "SEE LICENSE IN LICENSE",
   "author": "Inflector",
