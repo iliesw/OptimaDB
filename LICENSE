@@ -1,0 +1,42 @@
+Inflector Public Attribution License (IPAL) v1.0
+
+Copyright (c) 2024 Inflector. All rights reserved.
+
+Definitions
+1. "Software" means the source code, object code, and documentation contained in this repository named "OptimaDB".
+2. "You" means an individual or legal entity exercising permissions granted by this License.
+3. "Contribution" means any work of authorship, including modifications, that is intentionally submitted to the project.
+
+Grant of Permission
+Subject to the conditions set forth below, Inflector grants You a worldwide, royalty-free, non-exclusive, irrevocable license to use, copy, modify, create derivative works of, and distribute the Software, in source or binary form, for any purpose.
+
+Conditions
+1) Attribution.
+   a. You must retain, in all copies or substantial portions of the Software and in all derivative works, the following: (i) the copyright notice above; (ii) this License text; and (iii) a prominent attribution notice stating: "This work is based on OptimaDB by Inflector" (or reasonable equivalent).
+   b. For applications, libraries, and services, the attribution must appear in the README or equivalent developer-facing documentation and in any publicly available product documentation or "About" page where third-party notices are listed.
+
+2) No Misrepresentation of Origin.
+   a. You must not misrepresent the origin of the Software. You may not claim that You wrote the original Software.
+   b. If You modify the Software, You must include a prominent notice stating that You have changed the files and the date of any change. Forks must clearly indicate they are forks.
+
+3) Name Use and Trademarks.
+   a. This License does not grant permission to use the names "Inflector", "OptimaDB", logos, or trademarks except for the required attribution described above. You may not use Inflector’s names or marks to endorse or promote products derived from this Software without prior written permission.
+
+4) Contributions.
+   By submitting a Contribution to the project, You grant Inflector and all recipients of the Software a perpetual, worldwide, non-exclusive, royalty-free license to use, reproduce, prepare derivative works of, publicly display, publicly perform, sublicense, and distribute Your Contribution under this License. You represent that You have the right to grant this license for Your Contribution.
+
+5) No Additional Restrictions.
+   You may not impose any additional or different terms on the Software that alter or limit the obligations and rights under this License, other than additional attribution consistent with Section 1.
+
+Disclaimer of Warranty
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+Limitation of Liability
+TO THE MAXIMUM EXTENT PERMITTED BY LAW, IN NO EVENT WILL INFLECTOR BE LIABLE FOR ANY INDIRECT, SPECIAL, INCIDENTAL, CONSEQUENTIAL, EXEMPLARY, OR PUNITIVE DAMAGES, OR FOR ANY LOSS OF USE, DATA, BUSINESS, OR PROFITS, ARISING OUT OF OR IN CONNECTION WITH THIS LICENSE OR THE USE OR PERFORMANCE OF THE SOFTWARE, WHETHER SUCH LIABILITY ARISES FROM ANY CLAIM BASED UPON CONTRACT, WARRANTY, TORT (INCLUDING NEGLIGENCE), STRICT LIABILITY, OR OTHERWISE, AND WHETHER OR NOT INFLECTOR HAS BEEN ADVISED OF THE POSSIBILITY OF SUCH LOSS OR DAMAGE.
+
+Termination
+If You materially breach this License and fail to cure such breach within 30 days of notice, Your rights under this License terminate automatically. Upon termination, You must cease use and distribution of the Software, but provisions requiring attribution, disclaimers, and limitations of liability survive.
+
+Miscellaneous
+This is the complete agreement concerning the Software. If any provision is unenforceable, it shall be modified to the minimum extent necessary to make it enforceable, and the remainder of the License shall remain in effect. This License is governed by the laws applicable in the jurisdiction of Inflector’s principal place of business, without regard to conflict of law rules.
+

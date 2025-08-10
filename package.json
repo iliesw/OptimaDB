@@ -2,6 +2,8 @@
   "name": "optima-db",
   "version": "1.0.1",
   "module": "src/index.ts",
+  "license": "SEE LICENSE IN LICENSE",
+  "author": "Inflector",
   "devDependencies": {
     "@types/bun": "latest"
   },
