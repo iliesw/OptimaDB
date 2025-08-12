@@ -142,16 +142,22 @@ export class OptimaDB<S extends Record<string, OptimaTableDef<any>>> {
         options.mode == "Hybrid"
       );
     }
+
+    // Auto-migrate at startup to match in-code schema (no renames by default)
+    for (const tableName in this.Tables) {
+      const t = (this.Tables as any)[tableName] as OptimaTable<any>;
+      t.MigrateSchema();
+    }
   }
 
   private LoadFromDisk(): void {
     const exist = fs.existsSync(path.join(this.Path, "db.sqlite"));
     if (!exist) {
       const inMemoryDb = new Database(":memory:");
-      this.ensureDbPath()
+      this.ensureDbPath();
       this.InternalDB = inMemoryDb;
-      return
-    };
+      return;
+    }
     const inMemoryDb = new Database(":memory:");
     try {
       const escapedDiskDbPath = path
@@ -218,7 +224,7 @@ export class OptimaTable<TDef extends OptimaTableDef<Record<string, any>>> {
   private InternalOptimaDBRefrance: OptimaDB<any>;
   private isHybrid: boolean;
   private Schema: TDef;
-  private ChangeEvent:EventEmitter;
+  private ChangeEvent: EventEmitter;
   private ChangeConfig = {
     ChangeCounter: 0,
     Threashold: 2000,
@@ -874,7 +880,7 @@ export class OptimaTable<TDef extends OptimaTableDef<Record<string, any>>> {
    */
   MigrateSchema = (renameColumns?: Record<string, string>) => {
     const existing = this.getExistingColumns();
-    const desiredColumns = Object.keys(this.Schema);
+    const desiredColumns = Object.keys(this.Schema.cols);
 
     // If table doesn't exist yet, just create it using the normal initializer and return.
     if (!this.tableExists()) {

@@ -1,4 +1,4 @@
-import { Table, Int, Email,Array, Password, Json,Day, TableToSQL } from "../src";
+import { Table, Int, Email,Array, Password, Json,Day, TableToSQL, Float } from "../src";
 
 export const Users = Table("Users", {
   ID: Int({
@@ -7,6 +7,8 @@ export const Users = Table("Users", {
   }),
   Email: Email(),
   Password: Password(),
+  Age:Int(),
+  Salary:Float()
 });
 
 export const Profile = Table("Profile", {
