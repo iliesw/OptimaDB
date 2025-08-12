@@ -667,7 +667,7 @@ export class OptimaTable<TDef extends OptimaTableDef<Record<string, any>>> {
   };
   Insert = (Values: InsertInput<TDef>) => {
     // Runtime validation: ensure all NOT NULL fields are present and non-null
-    for (const key of Object.keys(this.Schema)) {
+    for (const key of Object.keys(this.Schema.cols)) {
       const field = (this.Schema as any)[key] as OptimaField<any> & {
         isNotNullField?: () => boolean;
       };
@@ -832,7 +832,7 @@ export class OptimaTable<TDef extends OptimaTableDef<Record<string, any>>> {
    * Build a CREATE TABLE statement for a specific name using the in-code schema definition.
    */
   private buildCreateSQLFor = (name: string): string => {
-    const colDefs = Object.entries(this.Schema).map(([colName, field]) => {
+    const colDefs = Object.entries(this.Schema.cols).map(([colName, field]) => {
       // Access the internal SQL builder the same way Table() does
       const def = (field as any)["toSQL"]?.();
       return `"${colName}" ${def}`;
@@ -958,7 +958,6 @@ export class OptimaTable<TDef extends OptimaTableDef<Record<string, any>>> {
       this.InternalDBRefrance.exec(
         `ALTER TABLE "${tempName}" RENAME TO "${this.Name}"`
       );
-
       this.InternalDBRefrance.run("PRAGMA foreign_keys = ON");
       this.InternalDBRefrance.run("COMMIT");
     } catch (e) {
