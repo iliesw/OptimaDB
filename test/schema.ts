@@ -1,4 +1,4 @@
-import { Table, Int, Email,Array, Password, Json,Day } from "./../src";
+import { Table, Int, Email,Array, Password, Json,Day, TableToSQL } from "../src";
 
 export const Users = Table("Users", {
   ID: Int({
@@ -14,7 +14,7 @@ export const Profile = Table("Profile", {
     default: 1,
     notNull: true,
   }),
-  UserID: Int().reference(() => [Users.ID]),
+  UserID: Int().reference(() => Users.ID),
   Likes: Int({
     default: 0,
   }),
@@ -42,3 +42,4 @@ export const Comments = Table("Comments", {
   Content: Json(),
   CreatedAt: Day(),
 });
+

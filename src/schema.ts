@@ -1,52 +1,37 @@
-export const TABLE_META = Symbol("OPTIMA_TABLE_META");
-
-export type OptimaTableMeta = {
-  Name: string;
-  toSQL: () => string;
-};
-
 export type OptimaTableDef<TColumns extends Record<string, OptimaField>> =
   TColumns;
 
 export function Table<TColumns extends Record<string, OptimaField>>(
   name: string,
   cols: TColumns
-): OptimaTableDef<TColumns> {
-  class OptimaTableInstance {
-    #name: string;
-    #cols: TColumns;
-
-    constructor(tableName: string, columns: TColumns) {
-      this.#name = tableName;
-      this.#cols = columns;
-
-      // Attach column fields directly to the instance for autocomplete
-      Object.assign(this, columns);
-
-      // Attach non-enumerable metadata for internal use
-      Object.defineProperty(this, TABLE_META, {
-        value: {
-          Name: this.#name,
-          toSQL: () => this.#toSQL(),
-        } as OptimaTableMeta,
-        enumerable: false,
-        configurable: false,
-        writable: false,
-      });
-    }
-
-    // Private SQL builder function
-    #toSQL(): string {
-      const colDefs = Object.entries(this.#cols).map(([colName, field]) => {
-        return `"${colName}" ${field["toSQL"]()}`;
-      });
-      return `CREATE TABLE IF NOT EXISTS "${this.#name}" (\n  ${colDefs.join(",\n  ")}\n);`;
+) {
+  class TableInstance {
+    name:string;
+    cols:TColumns;
+    constructor(cols:TColumns,name:string){
+      this.cols = cols;
+      this.name = name;
+      Object.assign(this,cols)
     }
   }
-
-  // Return instance typed as columns + hidden meta
-  return new OptimaTableInstance(name, cols) as unknown as OptimaTableDef<TColumns>;
+  return new TableInstance(cols,name) as unknown as TColumns;
 }
+
+// External SQL builders
+export const FieldToSQL = (field: OptimaField<any, any, any>): string => {
+  return (field as any)["toSQL"]();
+};
+
+export const TableToSQL = (table: OptimaTableDef<any>): string => {
+  const t: any = table as any;
+  const name: string = t["name"];
+  const cols: Record<string, OptimaField<any, any, any>> = t?.cols ?? t ?? {};
+  const colDefs = Object.entries(cols)
+    .filter(([, v]) => v instanceof OptimaField)
+    .map(([colName, field]) => `\`${colName}\` ${FieldToSQL(field)}`);
+  return `CREATE TABLE IF NOT EXISTS \`${name}\` (\n  ${colDefs.join(",\n  ")}\n);`;
+};
+
 export class OptimaField<
   T = any,
   TNotNull extends boolean = false,

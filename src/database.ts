@@ -1,8 +1,9 @@
 import { Database } from "bun:sqlite";
-import { TABLE_META } from "./schema";
-import type { OptimaTableDef, OptimaTableMeta, OptimaField } from "./schema";
+import { TableToSQL } from "./schema";
+import type { OptimaTableDef, OptimaField } from "./schema";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { EventEmitter } from "events";
 
 // ---------- Typing helpers for great DX ----------
 export type FieldRuntimeType<F> = F extends OptimaField<infer T, any, any>
@@ -80,362 +81,134 @@ export class OptimaDB<S extends Record<string, OptimaTableDef<any>>> {
   public Tables: OptimaTablesFromSchema<S>;
 
   // Hybrid/Mode support
-  private Mode: "disk" | "memory" | "hybrid" = "memory";
+  private Mode: "Disk" | "Memory" | "Hybrid" = "Memory";
   private SchemaRef: S;
-  private SaveDebounceTimer: any = null;
-  private SaveIntervalTimer: any = null;
-  private AutosaveEnabled: boolean = false;
-  private AutosaveDebounceMs: number = 1500;
-  private AutosaveIntervalMs: number = 30000;
-  private onSigInt?: () => void;
-  private onSigTerm?: () => void;
-  private onBeforeExit?: () => void;
-  private onUncaughtException?: (err: any) => void;
 
   constructor(
     Schema: S,
-    options?:
-      | string
-      | {
-          mode?: "disk" | "memory" | "hybrid";
-          path?: string;
-          autosave?: {
-            enabled?: boolean;
-            debounceMs?: number;
-            intervalMs?: number;
-          };
-        }
+    options?: {
+      mode: "Disk" | "Memory" | "Hybrid";
+      path: string;
+    }
   ) {
     this.SchemaRef = Schema;
-
-    // Interpret constructor overload
-    if (typeof options === "string") {
-      this.Mode = "disk";
-      this.Path = options;
-    } else if (typeof options === "object" && options) {
-      this.Mode = options.mode ?? (options.path ? "disk" : "memory");
-      this.Path = options.path ?? "";
-      if (options.autosave) {
-        this.AutosaveEnabled = options.autosave.enabled ?? true;
-        if (typeof options.autosave.debounceMs === "number")
-          this.AutosaveDebounceMs = options.autosave.debounceMs;
-        if (typeof options.autosave.intervalMs === "number")
-          this.AutosaveIntervalMs = options.autosave.intervalMs;
-      } else {
-        this.AutosaveEnabled = this.Mode === "hybrid";
+    options = options ?? {
+      mode: "Memory",
+      path: "",
+    };
+    switch (options?.mode) {
+      case "Disk": {
+        this.Mode = "Disk";
+        this.Path = options.path;
+        const dbFile = this.ensureDbPath();
+        this.InternalDB = new Database(dbFile, { create: true });
+        this.InternalDB.exec("PRAGMA journal_mode = WAL;"); // Enable WAL MODE
+        break;
       }
-    } else {
-      this.Mode = "memory";
-      this.Path = "";
-      this.AutosaveEnabled = false;
-    }
-
-    // Open the primary database connection
-    if (this.Mode === "disk") {
-      const dbFile = this.ensureDbPath();
-      this.InternalDB = new Database(dbFile, { create: true });
-    } else {
-      this.InternalDB = new Database(":memory:");
-    }
-    this.InternalDB.exec("PRAGMA journal_mode = WAL;"); // Enable WAL MODE
-    // Help avoid SQLITE_BUSY on Windows when other processes touch the file
-    try { this.InternalDB.exec("PRAGMA busy_timeout = 5000;"); } catch {}
-
-    const tables = {} as OptimaTablesFromSchema<S>;
-    for (const tableName in Schema) {
-      if (
-        Object.prototype.hasOwnProperty.call(Schema, tableName) &&
-        Schema[tableName]
-      ) {
-        const tableDef = Schema[tableName as keyof S] as S[keyof S];
-        (tables as any)[tableName] = new OptimaTable(
-          this.InternalDB,
-          tableName,
-          tableDef,
-          Schema,
-          this
-        );
+      case "Memory": {
+        this.Mode = "Memory";
+        this.InternalDB = new Database(":memory:");
+        this.InternalDB.exec("PRAGMA journal_mode = WAL;"); // Enable WAL MODE
+        break;
       }
-    }
-    this.Tables = tables;
-
-    // Auto-migrate at startup to match in-code schema (no renames by default)
-    for (const tableName in this.Tables) {
-      const t = (this.Tables as any)[tableName] as OptimaTable<any>;
-      t.MigrateSchema();
-    }
-
-    // If hybrid, import from disk and start autosave timers/handlers
-    if (this.Mode === "hybrid") {
-      this.loadFromDiskIfExists();
-      this.startAutosaveInterval();
-      this.installSignalHandlers();
-    }
-  }
-
-  Close = () => {
-    // Stop background activity first to avoid races
-    try {
-      if (this.SaveDebounceTimer) clearTimeout(this.SaveDebounceTimer);
-      if (this.SaveIntervalTimer) clearInterval(this.SaveIntervalTimer);
-      this.SaveDebounceTimer = null;
-      this.SaveIntervalTimer = null;
-    } catch {}
-    this.uninstallSignalHandlers();
-    try {
-      if (this.Mode === "hybrid") {
-        this.saveToDiskSafe();
-        // Open the saved file briefly to fully release WAL/SHM on Windows
-        try {
-          const finalFile = path.join(this.Path ? this.Path : ".", "db.sqlite");
-          if (fs.existsSync(finalFile)) {
-            const db = new Database(finalFile, { create: false });
-            try { db.exec("PRAGMA busy_timeout = 5000;"); } catch {}
-            try { db.exec("PRAGMA wal_checkpoint(TRUNCATE);"); } catch {}
-            try { db.exec("PRAGMA journal_mode = DELETE;"); } catch {}
-            try { db.exec("PRAGMA optimize;"); } catch {}
-            try { db.close(true); } catch {}
+      case "Hybrid": {
+        this.Mode = "Hybrid";
+        this.Path = options.path;
+        this.LoadFromDisk();
+        this.InternalDB.exec("PRAGMA journal_mode = WAL;"); // Enable WAL MODE
+        const saveHandler = () => {
+          try {
+            this.SaveToDisk();
+          } catch (e) {
+            console.error("Error saving database on signal:", e);
           }
-        } catch {}
-      }
-    } catch {
-      // ignore close-time save errors
-    }
-    // On Windows, WAL sidecar files can appear "locked" if not checkpointed.
-    // Checkpoint and switch back to DELETE journaling before closing the handle.
-    try {
-      if (this.Mode === "disk") {
-        try { this.InternalDB.exec("PRAGMA wal_checkpoint(TRUNCATE);"); } catch {}
-        try { this.InternalDB.exec("PRAGMA journal_mode = DELETE;"); } catch {}
-        try { this.InternalDB.exec("PRAGMA optimize;"); } catch {}
-      }
-    } catch {}
-    // Retry-close if busy
-    let lastErr: any;
-    for (let i = 0; i < 3; i++) {
-      try { this.InternalDB.close(true); return; }
-      catch (e) {
-        lastErr = e;
-        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50);
+        };
+        process.once("exit", () => {
+          saveHandler();
+          process.exit(0);
+        });
+        break;
       }
     }
-    // throw last error if still failing
-    throw lastErr;
-  };
-
-  /**
-   * Migrate all tables to match the provided in-code schema.
-   * Pass optional rename maps: { [tableName]: { oldCol: newCol } }
-   */
-  Migrate = (renames?: Partial<{ [K in keyof S & string]: Record<string, string> }>) => {
-    for (const tableName in this.Tables) {
-      const table = (this.Tables as any)[tableName] as OptimaTable<any>;
-      const renameMap = (renames as any)?.[tableName] as Record<string, string> | undefined;
-      table.MigrateSchema(renameMap);
-    }
-  };
-
-  // Manual snapshot to disk (hybrid only). No-op in other modes.
-  public SaveNow(): void {
-    this.saveToDiskSafe();
-  }
-
-  // ---------- Hybrid helpers ----------
-  private ensureDbPath(): string {
-    const base = this.Path ? this.Path : ".";
-    try { fs.mkdirSync(base, { recursive: true }); } catch {}
-    return path.join(base, "db.sqlite");
-  }
-
-  private escapeSqlStringLiteral(p: string): string {
-    return p.replace(/'/g, "''");
-  }
-
-  private defaultLiteralForField(field: any): string {
-    try {
-      const hasDefault = typeof field?.hasDefaultValue === "function" ? field.hasDefaultValue() : false;
-      if (!hasDefault) return "NULL";
-      const rawDefault = typeof field?.getDefaultValue === "function" ? field.getDefaultValue() : undefined;
-      const formatted = typeof field?.applyFormatIn === "function" ? field.applyFormatIn(rawDefault) : rawDefault;
-      if (formatted === null || formatted === undefined) return "NULL";
-      if (typeof formatted === "number") return String(formatted);
-      if (typeof formatted === "boolean") return formatted ? "1" : "0";
-      const asString = String(formatted);
-      const escaped = asString.replace(/'/g, "''");
-      return `'${escaped}'`;
-    } catch {
-      return "NULL";
+    this.Tables = {} as OptimaTablesFromSchema<S>;
+    for (const tableName in Schema) {
+      const tableDef = Schema[tableName as keyof S] as S[keyof S];
+      this.Tables[tableName as keyof S] = new OptimaTable(
+        this.InternalDB,
+        tableName,
+        tableDef,
+        Schema,
+        this,
+        options.mode == "Hybrid"
+      );
     }
   }
 
-  private loadFromDiskIfExists() {
-    if (!this.Path) return;
-    const dbFile = this.ensureDbPath();
-    if (!fs.existsSync(dbFile)) return;
-
-    const escaped = this.escapeSqlStringLiteral(dbFile);
-    this.InternalDB.run("BEGIN");
+  private LoadFromDisk(): void {
+    const exist = fs.existsSync(path.join(this.Path, "db.sqlite"));
+    if (!exist) {
+      const inMemoryDb = new Database(":memory:");
+      this.ensureDbPath()
+      this.InternalDB = inMemoryDb;
+      return
+    };
+    const inMemoryDb = new Database(":memory:");
     try {
-      this.InternalDB.exec(`ATTACH '${escaped}' AS disk;`);
-      // For each table defined in the schema, import from disk if present
-      for (const tableName in this.Tables) {
-        const desiredSchema = (this.SchemaRef as any)[tableName];
-        if (!desiredSchema) continue;
-
-        const existsRow = this.InternalDB
-          .query("SELECT name FROM disk.sqlite_master WHERE type='table' AND name = ?")
-          .get(tableName) as { name?: string } | undefined;
-        if (!existsRow || existsRow.name !== tableName) continue;
-
-        const rows = this.InternalDB
-          .query(`PRAGMA disk.table_info("${tableName}")`)
-          .all() as Array<{ name: string }>;
-        const diskCols = rows.map(r => r.name);
-        const desiredCols = Object.keys(desiredSchema);
-
-        const selectExprs: string[] = [];
-        const targetCols: string[] = [];
-        for (const col of desiredCols) {
-          targetCols.push(`"${col}"`);
-          if (diskCols.includes(col)) {
-            selectExprs.push(`"${col}"`);
+      const escapedDiskDbPath = path
+        .join(this.Path, "db.sqlite")
+        .replace(/\\/g, "\\\\");
+      inMemoryDb.exec(`ATTACH DATABASE '${escapedDiskDbPath}' AS source_db;`);
+      const tables = inMemoryDb
+        .query(
+          `
+            SELECT name FROM source_db.sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%';
+        `
+        )
+        .all() as { name: string }[];
+      inMemoryDb.transaction(() => {
+        // Use a transaction for performance
+        for (const table of tables) {
+          const tableName = table.name;
+          const createStmtResult = inMemoryDb
+            .query(
+              `
+                    SELECT sql FROM source_db.sqlite_master WHERE type='table' AND name='${tableName}';
+                `
+            )
+            .get() as { sql: string };
+          if (createStmtResult && createStmtResult.sql) {
+            inMemoryDb.exec(createStmtResult.sql);
+            inMemoryDb.exec(
+              `INSERT INTO ${tableName} SELECT * FROM source_db.${tableName};`
+            );
           } else {
-            const field = (desiredSchema as any)[col];
-            const literal = this.defaultLiteralForField(field);
-            selectExprs.push(`${literal} AS "${col}"`);
+            console.warn(
+              `Could not find CREATE TABLE statement for '${tableName}'. Skipping.`
+            );
           }
         }
-
-        // Import data
-        const insertSQL = `INSERT INTO "${tableName}" (${targetCols.join(", ")}) SELECT ${selectExprs.join(", ")} FROM disk."${tableName}"`;
-        this.InternalDB.exec(insertSQL);
-      }
-      // Commit the import transaction before detaching the file DB
-      this.InternalDB.run("COMMIT");
-      // After commit, ensure attached DB is checkpointed and not left in WAL
-      try { this.InternalDB.exec("PRAGMA disk.wal_checkpoint(TRUNCATE);"); } catch {}
-      try { this.InternalDB.exec("PRAGMA disk.journal_mode = DELETE;"); } catch {}
-      this.InternalDB.exec("DETACH disk;");
-    } catch (e) {
-      try { this.InternalDB.run("ROLLBACK"); } catch {}
-      try { this.InternalDB.exec("DETACH disk;"); } catch {}
-      throw e;
+      })(); // Execute the transaction
+    } catch (error: any) {
+      console.error("Error during database copy via ATTACH:", error.message);
+      inMemoryDb.close();
+      throw error; // Re-throw to indicate failure
+    } finally {
+      inMemoryDb.exec("DETACH DATABASE source_db;");
     }
+    this.InternalDB = inMemoryDb;
   }
 
-  private saveToDiskViaVacuum(): void {
+  private SaveToDisk() {
+    const content = this.InternalDB.serialize();
+    fs.writeFileSync(path.join(this.Path, "db.sqlite"), content);
+  }
+
+  private ensureDbPath(): string {
     const base = this.Path ? this.Path : ".";
-    try { fs.mkdirSync(base, { recursive: true }); } catch {}
-    const tmpFile = path.join(base, "db.sqlite.tmp");
-    const finalFile = path.join(base, "db.sqlite");
-    const escapedTmp = this.escapeSqlStringLiteral(tmpFile);
-    this.InternalDB.exec(`VACUUM INTO '${escapedTmp}';`);
     try {
-      if (fs.existsSync(finalFile)) fs.rmSync(finalFile, { force: true });
+      fs.mkdirSync(base, { recursive: true });
     } catch {}
-    fs.renameSync(tmpFile, finalFile);
-    // Post-process the written file to avoid leftover WAL/SHM on Windows
-    try {
-      const tmpDb = new Database(finalFile, { create: true });
-      try { tmpDb.exec("PRAGMA busy_timeout = 5000;"); } catch {}
-      try { tmpDb.exec("PRAGMA wal_checkpoint(TRUNCATE);"); } catch {}
-      try { tmpDb.exec("PRAGMA journal_mode = DELETE;"); } catch {}
-      try { tmpDb.exec("PRAGMA optimize;"); } catch {}
-      try { tmpDb.close(true); } catch {}
-    } catch {}
-  }
-
-  private saveToDiskViaAttach(): void {
-    const base = this.Path ? this.Path : ".";
-    try { fs.mkdirSync(base, { recursive: true }); } catch {}
-    const finalFile = path.join(base, "db.sqlite");
-    const escaped = this.escapeSqlStringLiteral(finalFile);
-
-    this.InternalDB.run("BEGIN");
-    try {
-      this.InternalDB.exec(`ATTACH '${escaped}' AS disk;`);
-      // Recreate each table on disk with current schema and copy data
-      for (const tableName in this.Tables) {
-        const desiredSchema = (this.SchemaRef as any)[tableName];
-        if (!desiredSchema) continue;
-
-        // Drop existing disk table and recreate
-        this.InternalDB.exec(`DROP TABLE IF EXISTS disk."${tableName}";`);
-        const colDefs = Object.entries(desiredSchema).map(([colName, field]: any) => `"${colName}" ${field["toSQL"]?.()}`);
-        const createSQL = `CREATE TABLE disk."${tableName}" (\n  ${colDefs.join(",\n  ")}\n);`;
-        this.InternalDB.exec(createSQL);
-
-        const cols = Object.keys(desiredSchema).map(c => `"${c}"`).join(", ");
-        this.InternalDB.exec(`INSERT INTO disk."${tableName}" (${cols}) SELECT ${cols} FROM main."${tableName}";`);
-      }
-      // Commit first, then run pragmas and detach outside the transaction
-      this.InternalDB.run("COMMIT");
-      try { this.InternalDB.exec("PRAGMA disk.wal_checkpoint(TRUNCATE);"); } catch {}
-      try { this.InternalDB.exec("PRAGMA disk.journal_mode = DELETE;"); } catch {}
-      this.InternalDB.exec("DETACH disk;");
-    } catch (e) {
-      try { this.InternalDB.run("ROLLBACK"); } catch {}
-      try { this.InternalDB.exec("DETACH disk;"); } catch {}
-      throw e;
-    }
-  }
-
-  private saveToDisk(): void {
-    if (this.Mode !== "hybrid") return;
-    try {
-      this.saveToDiskViaVacuum();
-    } catch {
-      this.saveToDiskViaAttach();
-    }
-  }
-
-  private saveToDiskSafe(): void {
-    try { this.saveToDisk(); } catch (e) { /* swallow */ }
-  }
-
-  public scheduleSave(): void {
-    if (this.Mode !== "hybrid") return;
-    if (!this.AutosaveEnabled) return;
-    try { if (this.SaveDebounceTimer) clearTimeout(this.SaveDebounceTimer); } catch {}
-    this.SaveDebounceTimer = setTimeout(() => {
-      this.saveToDiskSafe();
-    }, this.AutosaveDebounceMs);
-  }
-
-  private startAutosaveInterval(): void {
-    if (this.Mode !== "hybrid") return;
-    if (!this.AutosaveEnabled) return;
-    if (this.AutosaveIntervalMs && this.AutosaveIntervalMs > 0) {
-      try { if (this.SaveIntervalTimer) clearInterval(this.SaveIntervalTimer); } catch {}
-      this.SaveIntervalTimer = setInterval(() => this.saveToDiskSafe(), this.AutosaveIntervalMs);
-    }
-  }
-
-  private installSignalHandlers(): void {
-    const attempt = () => { try { this.saveToDiskSafe(); } catch {} };
-    this.onSigInt = attempt;
-    this.onSigTerm = attempt;
-    this.onBeforeExit = attempt;
-    this.onUncaughtException = (err: any) => { try { this.saveToDiskSafe(); } catch {}; };
-    try {
-      (process as any)?.on?.("SIGINT", this.onSigInt);
-      (process as any)?.on?.("SIGTERM", this.onSigTerm);
-      (process as any)?.on?.("beforeExit", this.onBeforeExit);
-      (process as any)?.on?.("uncaughtException", this.onUncaughtException);
-    } catch {}
-  }
-
-  private uninstallSignalHandlers(): void {
-    try {
-      if (this.onSigInt) (process as any)?.off?.("SIGINT", this.onSigInt);
-      if (this.onSigTerm) (process as any)?.off?.("SIGTERM", this.onSigTerm);
-      if (this.onBeforeExit) (process as any)?.off?.("beforeExit", this.onBeforeExit);
-      if (this.onUncaughtException) (process as any)?.off?.("uncaughtException", this.onUncaughtException);
-    } catch {}
-    this.onSigInt = undefined;
-    this.onSigTerm = undefined;
-    this.onBeforeExit = undefined;
-    this.onUncaughtException = undefined;
+    return path.join(base, "db.sqlite");
   }
 }
 
@@ -443,13 +216,18 @@ export class OptimaTable<TDef extends OptimaTableDef<Record<string, any>>> {
   private Name: string = "UNKNOWN";
   private InternalDBRefrance: Database;
   private InternalOptimaDBRefrance: OptimaDB<any>;
-
+  private isHybrid: boolean;
   private Schema: TDef;
-  private Meta: OptimaTableMeta;
+  private ChangeEvent:EventEmitter;
+  private ChangeConfig = {
+    ChangeCounter: 0,
+    Threashold: 2000,
+    Timer: 5000,
+    LastSave: 0,
+  };
   private extendRelationships: Map<string, any> = new Map();
   private InitTable(Tables: any) {
-    this.InternalDBRefrance.query(this.Meta.toSQL()).run();
-
+    this.InternalDBRefrance.query(TableToSQL(this.Schema)).run();
     // PreComute Relations
     for (const table of Object.keys(Tables)) {
       if (table == this.Name) continue;
@@ -474,14 +252,34 @@ export class OptimaTable<TDef extends OptimaTableDef<Record<string, any>>> {
     TableName: string,
     SchemaTable: TDef,
     TablesToCompute: any,
-    OptimaDBRef: OptimaDB<any>
+    OptimaDBRef: OptimaDB<any>,
+    isHybrid: boolean
   ) {
     this.InternalDBRefrance = InternalDB;
     this.InternalOptimaDBRefrance = OptimaDBRef;
     this.Schema = SchemaTable;
-    this.Meta = (SchemaTable as any)[TABLE_META] as OptimaTableMeta;
-    this.Name = this.Meta?.Name || TableName;
+    this.Name = TableName;
     this.InitTable(TablesToCompute);
+    this.isHybrid = isHybrid;
+    if (isHybrid) {
+      this.ChangeEvent = new EventEmitter();
+      this.ChangeConfig.LastSave = Date.now();
+      this.ChangeEvent.on("Change", () => {
+        this.ChangeConfig.ChangeCounter++;
+        const Now = Date.now();
+        const LastSave = this.ChangeConfig.LastSave;
+        const Diferance = Now - LastSave;
+        if (
+          Diferance >= this.ChangeConfig.Timer ||
+          this.ChangeConfig.ChangeCounter >= this.ChangeConfig.Threashold
+        ) {
+          // Save Logic
+          this.InternalOptimaDBRefrance["SaveToDisk"]();
+          this.ChangeConfig.ChangeCounter = 0;
+          this.ChangeConfig.LastSave = Date.now();
+        }
+      });
+    }
   }
 
   private mapOutRow = (row: any) => {
@@ -796,13 +594,70 @@ export class OptimaTable<TDef extends OptimaTableDef<Record<string, any>>> {
   };
   /**
    * Fetch a single row matching the optional WHERE filter.
+   * Now supports the 'Extend' option for relationship expansion.
    */
-  GetOne = (where?: WhereInput<TDef>): RowOf<TDef> | undefined => {
+  GetOne = (
+    where?: WhereInput<TDef>,
+    options?: GetOptions<TDef>
+  ): RowOf<TDef> | undefined => {
     const { clause, params } = this.buildWhereClause(where as any);
     const row = this.InternalDBRefrance.query(
       `SELECT * FROM "${this.Name}"${clause}`
     ).get(...params);
-    return this.mapOutRow(row);
+    let mappedRow = this.mapOutRow(row);
+    if (!mappedRow) return mappedRow;
+    if (options?.Extend != undefined) {
+      if (Array.isArray(options.Extend)) {
+        options.Extend.forEach((e) => {
+          if (this.extendRelationships.has(e)) {
+            const Table = e as string;
+            const Relation = this.extendRelationships.get(Table);
+            let Data;
+            if (Relation.Type == "MANY") {
+              Data = this.InternalOptimaDBRefrance.Tables[Table]?.Get({
+                [Relation.ExternalField]: mappedRow[Relation.InternalField],
+              });
+            } else {
+              Data = this.InternalOptimaDBRefrance.Tables[Table]?.GetOne({
+                [Relation.ExternalField]: mappedRow[Relation.InternalField],
+              });
+            }
+            mappedRow = { ...mappedRow, ["$" + e]: Data };
+          } else {
+            throw new Error(
+              "Table " +
+                this.Name +
+                " Doesn't have a realation to the table " +
+                e
+            );
+          }
+        });
+      } else {
+        if (this.extendRelationships.has(options.Extend)) {
+          const Table = options.Extend as string;
+          const Relation = this.extendRelationships.get(Table);
+          let Data;
+          if (Relation.Type == "MANY") {
+            Data = this.InternalOptimaDBRefrance.Tables[Table]?.Get({
+              [Relation.ExternalField]: mappedRow[Relation.InternalField],
+            });
+          } else {
+            Data = this.InternalOptimaDBRefrance.Tables[Table]?.GetOne({
+              [Relation.ExternalField]: mappedRow[Relation.InternalField],
+            });
+          }
+          mappedRow = { ...mappedRow, ["$" + options.Extend]: Data };
+        } else {
+          throw new Error(
+            "Table " +
+              this.Name +
+              " Doesn't have a realation to the table " +
+              options.Extend
+          );
+        }
+      }
+    }
+    return mappedRow;
   };
   Insert = (Values: InsertInput<TDef>) => {
     // Runtime validation: ensure all NOT NULL fields are present and non-null
@@ -847,7 +702,9 @@ export class OptimaTable<TDef extends OptimaTableDef<Record<string, any>>> {
       return raw;
     });
     const res = stmt.run(...formattedValues);
-    try { this.InternalOptimaDBRefrance.scheduleSave?.(); } catch {}
+    if (this.isHybrid) {
+      this.ChangeEvent.emit("Change");
+    }
     return res;
   };
 
@@ -890,7 +747,9 @@ export class OptimaTable<TDef extends OptimaTableDef<Record<string, any>>> {
     }`;
     const stmt = this.InternalDBRefrance.prepare(sql);
     const res = stmt.run(...setParams, ...whereBuilt.params);
-    try { this.InternalOptimaDBRefrance.scheduleSave?.(); } catch {}
+    if (this.isHybrid) {
+      this.ChangeEvent.emit("Change");
+    }
     return res;
   };
 
@@ -902,7 +761,9 @@ export class OptimaTable<TDef extends OptimaTableDef<Record<string, any>>> {
     const sql = `DELETE FROM "${this.Name}"${whereBuilt.clause}`;
     const stmt = this.InternalDBRefrance.prepare(sql);
     const res = stmt.run(...whereBuilt.params);
-    try { this.InternalOptimaDBRefrance.scheduleSave?.(); } catch {}
+    if (this.isHybrid) {
+      this.ChangeEvent.emit("Change");
+    }
     return res;
   };
   /**
@@ -917,17 +778,22 @@ export class OptimaTable<TDef extends OptimaTableDef<Record<string, any>>> {
   };
   Batch = (fn: Function) => {
     this.InternalDBRefrance.run("BEGIN");
-    try { fn(); this.InternalDBRefrance.run("COMMIT"); try { this.InternalOptimaDBRefrance.scheduleSave?.(); } catch {} }
-    catch (e) { this.InternalDBRefrance.run("ROLLBACK"); throw e; }
+    try {
+      fn();
+      this.InternalDBRefrance.run("COMMIT");
+    } catch (e) {
+      this.InternalDBRefrance.run("ROLLBACK");
+      throw e;
+    }
   };
 
   /**
    * Returns true if the underlying table exists in the database.
    */
   private tableExists = (): boolean => {
-    const row = this.InternalDBRefrance
-      .query("SELECT name FROM sqlite_master WHERE type='table' AND name = ?")
-      .get(this.Name) as { name?: string } | undefined;
+    const row = this.InternalDBRefrance.query(
+      "SELECT name FROM sqlite_master WHERE type='table' AND name = ?"
+    ).get(this.Name) as { name?: string } | undefined;
     return !!row && row.name === this.Name;
   };
 
@@ -935,10 +801,24 @@ export class OptimaTable<TDef extends OptimaTableDef<Record<string, any>>> {
    * Get current columns for this table from the database using PRAGMA table_info.
    */
   private getExistingColumns = () => {
-    if (!this.tableExists()) return [] as Array<{ name: string; type: string | null; notnull: number; dflt_value: any; pk: number }>;
-    const rows = this.InternalDBRefrance
-      .query(`PRAGMA table_info("${this.Name}")`)
-      .all() as Array<{ cid: number; name: string; type: string | null; notnull: number; dflt_value: any; pk: number }>;
+    if (!this.tableExists())
+      return [] as Array<{
+        name: string;
+        type: string | null;
+        notnull: number;
+        dflt_value: any;
+        pk: number;
+      }>;
+    const rows = this.InternalDBRefrance.query(
+      `PRAGMA table_info("${this.Name}")`
+    ).all() as Array<{
+      cid: number;
+      name: string;
+      type: string | null;
+      notnull: number;
+      dflt_value: any;
+      pk: number;
+    }>;
     return rows;
   };
 
@@ -959,10 +839,19 @@ export class OptimaTable<TDef extends OptimaTableDef<Record<string, any>>> {
    */
   private defaultLiteralForField = (field: any): string => {
     try {
-      const hasDefault = typeof field?.hasDefaultValue === "function" ? field.hasDefaultValue() : false;
+      const hasDefault =
+        typeof field?.hasDefaultValue === "function"
+          ? field.hasDefaultValue()
+          : false;
       if (!hasDefault) return "NULL";
-      const rawDefault = typeof field?.getDefaultValue === "function" ? field.getDefaultValue() : undefined;
-      const formatted = typeof field?.applyFormatIn === "function" ? field.applyFormatIn(rawDefault) : rawDefault;
+      const rawDefault =
+        typeof field?.getDefaultValue === "function"
+          ? field.getDefaultValue()
+          : undefined;
+      const formatted =
+        typeof field?.applyFormatIn === "function"
+          ? field.applyFormatIn(rawDefault)
+          : rawDefault;
       if (formatted === null || formatted === undefined) return "NULL";
       if (typeof formatted === "number") return String(formatted);
       if (typeof formatted === "boolean") return formatted ? "1" : "0";
@@ -1013,8 +902,10 @@ export class OptimaTable<TDef extends OptimaTableDef<Record<string, any>>> {
 
     let requiresRebuild = false;
     // Check name-level differences
-    for (const n of desiredNameSet) if (!normalizedExistingNames.has(n)) requiresRebuild = true;
-    for (const n of normalizedExistingNames) if (!desiredNameSet.has(n)) requiresRebuild = true;
+    for (const n of desiredNameSet)
+      if (!normalizedExistingNames.has(n)) requiresRebuild = true;
+    for (const n of normalizedExistingNames)
+      if (!desiredNameSet.has(n)) requiresRebuild = true;
 
     // If sets match, we could still differ on constraints/types; rebuild to be safe.
     // To avoid unnecessary churn, you could diff types via PRAGMA table_info, but we prefer safety here.
@@ -1050,19 +941,27 @@ export class OptimaTable<TDef extends OptimaTableDef<Record<string, any>>> {
       }
 
       if (existing.length > 0) {
-        const insertSQL = `INSERT INTO "${tempName}" (${targetCols.join(", ")}) SELECT ${selectExprs.join(", ")} FROM "${this.Name}"`;
+        const insertSQL = `INSERT INTO "${tempName}" (${targetCols.join(
+          ", "
+        )}) SELECT ${selectExprs.join(", ")} FROM "${this.Name}"`;
         this.InternalDBRefrance.exec(insertSQL);
       }
 
       // Replace old table
       this.InternalDBRefrance.exec(`DROP TABLE IF EXISTS "${this.Name}"`);
-      this.InternalDBRefrance.exec(`ALTER TABLE "${tempName}" RENAME TO "${this.Name}"`);
+      this.InternalDBRefrance.exec(
+        `ALTER TABLE "${tempName}" RENAME TO "${this.Name}"`
+      );
 
       this.InternalDBRefrance.run("PRAGMA foreign_keys = ON");
       this.InternalDBRefrance.run("COMMIT");
     } catch (e) {
-      try { this.InternalDBRefrance.run("ROLLBACK"); } catch {}
-      try { this.InternalDBRefrance.run("PRAGMA foreign_keys = ON"); } catch {}
+      try {
+        this.InternalDBRefrance.run("ROLLBACK");
+      } catch {}
+      try {
+        this.InternalDBRefrance.run("PRAGMA foreign_keys = ON");
+      } catch {}
       throw e;
     }
   };

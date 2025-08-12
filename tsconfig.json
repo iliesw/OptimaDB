@@ -9,6 +9,6 @@
     "forceConsistentCasingInFileNames": true,
     "declaration": true,
   },
-  "include": ["src"],         // ✅ Only include source files
-  "exclude": ["dist", "test", "data"]  // ✅ Now this works properly
+  "include": ["src"],
+  "exclude": ["dist", "test", "data"]
 }
