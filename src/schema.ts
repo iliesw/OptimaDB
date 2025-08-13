@@ -46,6 +46,7 @@ export class OptimaField<
   private PrimaryKey?: boolean | null;
   private Unique?: boolean | null;
   private Check?: string | null;
+  private AutoIncrement?: boolean | null; // <-- Added
   // Runtime value transformers
   private FormatInFn?: (value: any) => any;
   private FormatOutFn?: (value: any) => any;
@@ -58,6 +59,7 @@ export class OptimaField<
       primaryKey?: boolean;
       unique?: boolean;
       check?: string;
+      autoIncrement?: boolean; // <-- Added
     }
   ) {
     this.Type = type;
@@ -67,6 +69,7 @@ export class OptimaField<
     this.PrimaryKey = options?.primaryKey ?? null;
     this.Unique = options?.unique ?? null;
     this.Check = options?.check ?? null;
+    this.AutoIncrement = options?.autoIncrement ?? null; // <-- Added
 
     const OptimaToSQLMAP = {
       [FieldTypes.Email]: "TEXT",
@@ -87,6 +90,9 @@ export class OptimaField<
   private toSQL = () => {
     const parts: string[] = [this.SQLType];
     if (this.PrimaryKey) parts.push("PRIMARY KEY");
+    if (this.Type === FieldTypes.Int && this.AutoIncrement) {
+      parts.push("AUTOINCREMENT");
+    }
     if (this.NotNull) parts.push("NOT NULL");
     if (this.Unique) parts.push("UNIQUE");
     if (this.Default !== null && this.Default !== undefined) {
@@ -231,6 +237,7 @@ export type FieldOptions = {
   primaryKey?: boolean;
   unique?: boolean;
   check?: string;
+  autoIncrement?: boolean; // <-- Added
 };
 
 export interface Reference {
@@ -255,11 +262,11 @@ export enum FieldTypes {
 
 // Field helpers
 // Typed factory overloads to carry notNull/default flags into OptimaField generics
-export function Int(options: FieldOptions & { notNull: true; default: any }): OptimaField<number, true, true>;
-export function Int(options: FieldOptions & { notNull: true }): OptimaField<number, true, false>;
-export function Int(options: FieldOptions & { default: any }): OptimaField<number, false, true>;
-export function Int(options?: FieldOptions): OptimaField<number, false, false>;
-export function Int(options?: FieldOptions) {
+export function Int(options: FieldOptions & { notNull: true; default: any; autoIncrement?: boolean }): OptimaField<number, true, true>;
+export function Int(options: FieldOptions & { notNull: true; autoIncrement?: boolean }): OptimaField<number, true, false>;
+export function Int(options: FieldOptions & { default: any; autoIncrement?: boolean }): OptimaField<number, false, true>;
+export function Int(options?: FieldOptions & { autoIncrement?: boolean }): OptimaField<number, false, false>;
+export function Int(options?: FieldOptions & { autoIncrement?: boolean }) {
   return new OptimaField<number>(FieldTypes.Int, options);
 }
 

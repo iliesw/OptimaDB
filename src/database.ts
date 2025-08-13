@@ -123,10 +123,36 @@ export class OptimaDB<S extends Record<string, OptimaTableDef<any>>> {
             console.error("Error saving database on signal:", e);
           }
         };
-        process.once("exit", () => {
-          saveHandler();
-          process.exit(0);
-        });
+        // Save database on process exit, crash, or kill signals
+        const signals = [
+          "exit",
+          "SIGINT",
+          "SIGTERM",
+          "SIGQUIT",
+          "SIGHUP",
+          "uncaughtException",
+          "unhandledRejection"
+        ];
+
+        for (const sig of signals) {
+          if (sig === "exit") {
+            process.once(sig, () => {
+              saveHandler();
+            });
+          } else if (sig === "uncaughtException" || sig === "unhandledRejection") {
+            process.once(sig, (err) => {
+              saveHandler();
+              // Print error and exit with failure
+              console.error(`Process ${sig}:`, err);
+              process.exit(1);
+            });
+          } else {
+            process.once(sig, () => {
+              saveHandler();
+              process.exit(0);
+            });
+          }
+        }
         break;
       }
     }
