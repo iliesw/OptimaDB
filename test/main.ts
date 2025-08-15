@@ -6,4 +6,8 @@ const DB = new OptimaDB(Schema,{
   path:"data"
 });
 
-console.dir(DB.Tables.Users.GetOne())
+DB.Tables.Comments.Insert({
+  ID:1
+})
+
+console.dir(DB.Tables.Comments.GetOne())

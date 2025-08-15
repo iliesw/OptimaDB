@@ -18,7 +18,7 @@ Type-safe, zero-ORM wrapper over Bun/SQLite with a tiny, ergonomic API. Define y
 ## Getting Started
 
 ```sh
-bun add optima-db
+bun i @inflector/db
 ```
 
 ## Usage

@@ -693,7 +693,7 @@ export class OptimaTable<TDef extends OptimaTableDef<Record<string, any>>> {
   };
   Insert = (Values: InsertInput<TDef>) => {
     // Runtime validation: ensure all NOT NULL fields are present and non-null
-    for (const key of Object.keys(this.Schema.cols)) {
+    for (const key of Object.keys(this.Schema)) {
       const field = (this.Schema as any)[key] as OptimaField<any> & {
         isNotNullField?: () => boolean;
       };

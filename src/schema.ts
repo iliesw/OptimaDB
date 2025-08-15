@@ -72,17 +72,17 @@ export class OptimaField<
     this.AutoIncrement = options?.autoIncrement ?? null; // <-- Added
 
     const OptimaToSQLMAP = {
-      [FieldTypes.Email]: "TEXT",
-      [FieldTypes.Text]: "TEXT",
-      [FieldTypes.DateTime]: "TEXT",
-      [FieldTypes.Day]: "TEXT",
-      [FieldTypes.Password]: "TEXT",
-      [FieldTypes.UUID]: "TEXT",
-      [FieldTypes.Int]: "INTEGER",
-      [FieldTypes.Boolean]: "INTEGER",
-      [FieldTypes.Float]: "REAL",
-      [FieldTypes.Json]: "TEXT",
-      [FieldTypes.Array]: "TEXT",
+      [FieldTypes.Email]:     "TEXT",
+      [FieldTypes.Text]:      "TEXT",
+      [FieldTypes.DateTime]:  "TEXT",
+      [FieldTypes.Day]:       "TEXT",
+      [FieldTypes.Password]:  "TEXT",
+      [FieldTypes.UUID]:      "TEXT",
+      [FieldTypes.Int]:       "INTEGER",
+      [FieldTypes.Boolean]:   "INTEGER",
+      [FieldTypes.Float]:     "REAL",
+      [FieldTypes.Json]:      "TEXT",
+      [FieldTypes.Array]:     "TEXT",
     };
     this.SQLType = OptimaToSQLMAP[this.Type];
   }
