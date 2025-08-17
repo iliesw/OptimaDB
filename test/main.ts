@@ -10,4 +10,4 @@ DB.Tables.Comments.Insert({
   ID:1
 })
 
-console.dir(DB.Tables.Comments.GetOne())
+

@@ -5,74 +5,73 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { EventEmitter } from "events";
 
-// ---------- Typing helpers for great DX ----------
-export type FieldRuntimeType<F> = F extends OptimaField<infer T, any, any>
-  ? T
-  : any;
-export type RowOf<TDef extends OptimaTableDef<Record<string, any>>> = {
-  [K in keyof TDef]: FieldRuntimeType<TDef[K]>;
-};
-export type PartialRowOf<TDef extends OptimaTableDef<Record<string, any>>> =
-  Partial<RowOf<TDef>>;
 
-// Keys that are NOT NULL and do not have a default should be required in Insert
-export type RequiredInsertKeys<
-  TDef extends OptimaTableDef<Record<string, any>>
-> = {
-  [K in keyof TDef]-?: TDef[K] extends OptimaField<
-    any,
-    infer TNotNull extends boolean,
-    any
-  >
-    ? TNotNull extends true
-      ? K
+type GetType<T, S, ST extends string> = T & {
+  [K in keyof S as K extends ST
+    ? K extends string
+      ? K extends `$${string}`
+        ? K
+        : `$${K}`
       : never
+    : never]?: S[K];
+};
+
+export type FieldRuntimeType<F> = F extends OptimaField<infer T, any, any> ? T : any;
+export type RowOf<TDef extends OptimaTableDef<Record<string, any>>> = {
+    [K in keyof TDef]: FieldRuntimeType<TDef[K]>;
+};
+export type PartialRowOf<TDef extends OptimaTableDef<Record<string, any>>> = Partial<RowOf<TDef>>;
+export type RequiredInsertKeys<TDef extends OptimaTableDef<Record<string, any>>> = {
+    [K in keyof TDef]-?: TDef[K] extends OptimaField<any, infer TNotNull extends boolean, infer TAutoValue> ? 
+        TNotNull extends true ? 
+            TAutoValue extends true ? never : K 
+        : never 
     : never;
 }[keyof TDef];
-
-export type InsertInput<TDef extends OptimaTableDef<Record<string, any>>> =
-  Pick<RowOf<TDef>, RequiredInsertKeys<TDef>> &
-    Partial<Omit<RowOf<TDef>, RequiredInsertKeys<TDef>>>;
-
+export type InsertInput<TDef extends OptimaTableDef<Record<string, any>>> = Pick<RowOf<TDef>, RequiredInsertKeys<TDef>> & Partial<Omit<RowOf<TDef>, RequiredInsertKeys<TDef>>>;
 export type WhereOperatorObject<T> = {
-  $eq?: T;
-  $ne?: T | null;
-  $gt?: T;
-  $gte?: T;
-  $lt?: T;
-  $lte?: T;
-  $like?: string;
-  $between?: [T, T];
-  $in?: T[];
-  $nin?: T[];
-  $is?: null | "null" | "not-null";
-  $not?: WhereOperatorObject<T> | T | T[] | null;
+    $eq?: T;
+    $ne?: T | null;
+    $gt?: T;
+    $gte?: T;
+    $lt?: T;
+    $lte?: T;
+    $like?: string;
+    $between?: [T, T];
+    $in?: T[];
+    $nin?: T[];
+    $is?: null | "null" | "not-null";
+    $not?: WhereOperatorObject<T> | T | T[] | null;
 };
 export type ColumnWhere<T> = T | null | T[] | WhereOperatorObject<T>;
 export type BasicWhere<TDef extends OptimaTableDef<Record<string, any>>> = {
-  [K in keyof TDef]?: ColumnWhere<FieldRuntimeType<TDef[K]>>;
+    [K in keyof TDef]?: ColumnWhere<FieldRuntimeType<TDef[K]>>;
 };
-export type RawWhere = string | { $raw: { sql: string; params?: any[] } };
-export type WhereInput<TDef extends OptimaTableDef<Record<string, any>>> =
-  | RawWhere
-  | (BasicWhere<TDef> & {
-      $or?: WhereInput<TDef>[];
-      $and?: WhereInput<TDef>[];
-    });
-
+export type RawWhere = string | {
+    $raw: {
+        sql: string;
+        params?: any[];
+    };
+};
+export type WhereInput<TDef extends OptimaTableDef<Record<string, any>>> = RawWhere | (BasicWhere<TDef> & {
+    $or?: WhereInput<TDef>[];
+    $and?: WhereInput<TDef>[];
+});
 export type GetOptions<TDef extends OptimaTableDef<Record<string, any>>> = {
-  Limit?: number;
-  Offset?: number;
-  Unique?: boolean;
-  Extend?: string[] | string;
-  OrderBy?: {
-    Column: keyof RowOf<TDef> & string;
-    Direction: "ASC" | "DESC";
-  };
+    Limit?: number;
+    Offset?: number;
+    Unique?: boolean;
+    Extend?: string[] | string;
+    OrderBy?: {
+        Column: keyof RowOf<TDef> & string;
+        Direction: "ASC" | "DESC";
+    };
 };
+
+
 
 type OptimaTablesFromSchema<S extends Record<string, OptimaTableDef<any>>> = {
-  [K in keyof S]: OptimaTable<S[K]>;
+  [K in keyof S]: OptimaTable<S[K], S, K & string>;
 };
 
 export class OptimaDB<S extends Record<string, OptimaTableDef<any>>> {
@@ -161,12 +160,12 @@ export class OptimaDB<S extends Record<string, OptimaTableDef<any>>> {
       const tableDef = Schema[tableName as keyof S] as S[keyof S];
       this.Tables[tableName as keyof S] = new OptimaTable(
         this.InternalDB,
-        tableName,
+        tableName as keyof S & string,
         tableDef,
         Schema,
         this,
         options.mode == "Hybrid"
-      );
+      ) as any;
     }
 
     // Auto-migrate at startup to match in-code schema (no renames by default)
@@ -244,12 +243,13 @@ export class OptimaDB<S extends Record<string, OptimaTableDef<any>>> {
   }
 }
 
-export class OptimaTable<TDef extends OptimaTableDef<Record<string, any>>> {
-  private Name: string = "UNKNOWN";
+export class OptimaTable<TDef extends OptimaTableDef<Record<string, any>>, S extends Record<string, OptimaTableDef<any>> = Record<string, OptimaTableDef<any>>, N extends string = string> {
+  private Name: N;
   private InternalDBRefrance: Database;
-  private InternalOptimaDBRefrance: OptimaDB<any>;
+  private InternalOptimaDBRefrance: OptimaDB<S>;
   private isHybrid: boolean;
   private Schema: TDef;
+  private SchemaRef: S;
   private ChangeEvent: EventEmitter;
   private ChangeConfig = {
     ChangeCounter: 0,
@@ -258,7 +258,7 @@ export class OptimaTable<TDef extends OptimaTableDef<Record<string, any>>> {
     LastSave: 0,
   };
   private extendRelationships: Map<string, any> = new Map();
-  private InitTable(Tables: any) {
+  private InitTable(Tables: S) {
     this.InternalDBRefrance.query(TableToSQL(this.Schema)).run();
     // PreComute Relations
     for (const table of Object.keys(Tables)) {
@@ -281,15 +281,16 @@ export class OptimaTable<TDef extends OptimaTableDef<Record<string, any>>> {
   }
   constructor(
     InternalDB: Database,
-    TableName: string,
+    TableName: N,
     SchemaTable: TDef,
-    TablesToCompute: any,
-    OptimaDBRef: OptimaDB<any>,
+    TablesToCompute: S,
+    OptimaDBRef: OptimaDB<S>,
     isHybrid: boolean
   ) {
     this.InternalDBRefrance = InternalDB;
     this.InternalOptimaDBRefrance = OptimaDBRef;
     this.Schema = SchemaTable;
+    this.SchemaRef = TablesToCompute;
     this.Name = TableName;
     this.InitTable(TablesToCompute);
     this.isHybrid = isHybrid;
@@ -535,10 +536,12 @@ export class OptimaTable<TDef extends OptimaTableDef<Record<string, any>>> {
    * Fetch rows optionally filtered by a typed WHERE object.
    * - Supports operators like $gt, $in, $or, etc.
    */
-  Get = (
+  Get = <K extends Exclude<keyof S, N> & string>(
     where?: WhereInput<TDef>,
-    options?: GetOptions<TDef>
-  ): RowOf<TDef>[] => {
+    options?: GetOptions<TDef> & {
+      Extend?: K | K[];
+    }
+  ): GetType<RowOf<TDef>, S, K>[] => {
     const { clause, params } = this.buildWhereClause(where as any);
     const selectPrefix = options?.Unique ? "SELECT DISTINCT *" : "SELECT *";
     let orderClause = "";
@@ -628,10 +631,12 @@ export class OptimaTable<TDef extends OptimaTableDef<Record<string, any>>> {
    * Fetch a single row matching the optional WHERE filter.
    * Now supports the 'Extend' option for relationship expansion.
    */
-  GetOne = (
+  GetOne = <K extends Exclude<keyof S, N> & string>(
     where?: WhereInput<TDef>,
-    options?: GetOptions<TDef>
-  ): RowOf<TDef> | undefined => {
+    options?: GetOptions<TDef> & {
+      Extend?: K | K[];
+    }
+  ): GetType<RowOf<TDef>, S, K> | undefined => {
     const { clause, params } = this.buildWhereClause(where as any);
     const row = this.InternalDBRefrance.query(
       `SELECT * FROM "${this.Name}"${clause}`
