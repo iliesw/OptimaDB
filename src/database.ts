@@ -744,6 +744,13 @@ export class OptimaTable<TDef extends OptimaTableDef<Record<string, any>>, S ext
     }
     return res;
   };
+  InsertMany = (Values: InsertInput<TDef>[]) => {
+    this.Batch(()=>{
+      for(const row of Values){
+        this.Insert(row)
+      }
+    })
+  };
 
   /**
    * Update rows with typed values and WHERE conditions.

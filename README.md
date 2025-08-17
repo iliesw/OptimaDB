@@ -24,7 +24,7 @@ bun i @inflector/db
 ## Usage
 
 ```ts
-import { OptimaDB } from "optima-db";
+import { OptimaDB } from "@inflector/db";
 import * as Schema from "./schema";
 
 const DB = new OptimaDB(Schema); // In-Memory Database
@@ -61,7 +61,7 @@ const DB = new OptimaDB(Schema); // In-Memory Database
 ## Schema
 
 ```ts
-import { Table, Int, Email, Password } from "optima-db";
+import { Table, Int, Email, Password } from "@inflector/db";
 
 export const Users = Table("Users", {
   ID: Int({ default: 1, notNull: true }),
