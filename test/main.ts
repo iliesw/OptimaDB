@@ -1,13 +1,10 @@
 import { OptimaDB } from "../src";
 import * as Schema from "./schema";
 
-const DB = new OptimaDB(Schema,{
-  mode:"Hybrid",
-  path:"data"
+const DB = new OptimaDB(Schema);
+
+DB.Tables.Users.Insert({
+  Email: "ilies@gmail.com",
+  ID: 1,
 });
-
-DB.Tables.Comments.Insert({
-  ID:1
-})
-
 

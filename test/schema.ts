@@ -1,14 +1,24 @@
-import { Table, Int, Email,Array, Password, Json,Day, TableToSQL, Float } from "../src";
+import {
+  Table,
+  Int,
+  Email,
+  Array,
+  Password,
+  Json,
+  Day,
+  Float,
+  isFieldInsertOptional,
+} from "../src";
 
 export const Users = Table("Users", {
   ID: Int({
-    default: 1,
-    notNull: true,
+    primaryKey: true,
+    autoIncrement: true,
   }),
-  Email: Email(),
+  Email: Email({ notNull: true }),
   Password: Password(),
-  Age:Int(),
-  Salary:Float()
+  Age: Int(),
+  Salary: Float(),
 });
 
 export const Profile = Table("Profile", {
@@ -16,12 +26,12 @@ export const Profile = Table("Profile", {
     default: 1,
     notNull: true,
   }),
-  UserID: Int().reference(() => Users.ID),
+  UserID: Int().reference(Users, "ID", "Many"),
   Likes: Int({
     default: 0,
   }),
   Bio: Json(),
-  Win: Array()
+  Win: Array(),
 });
 
 export const Posts = Table("Posts", {
@@ -29,7 +39,7 @@ export const Posts = Table("Posts", {
     default: 1,
     notNull: true,
   }),
-  UserID: Int().reference(() => [Users.ID]),
+  UserID: Int().reference(Users, "ID", "Many"),
   Content: Json(),
   CreatedAt: Day(),
 });
@@ -39,9 +49,10 @@ export const Comments = Table("Comments", {
     default: 1,
     notNull: true,
   }),
-  PostID: Int().reference(() => [Posts.ID]),
-  UserID: Int().reference(() => [Users.ID]),
+  PostID: Int().reference(Posts, "ID", "Many"),
+  UserID: Int().reference(Users, "ID", "Many"),
   Content: Json(),
   CreatedAt: Day(),
 });
+
 
