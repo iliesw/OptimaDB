@@ -2,7 +2,7 @@ import { Database } from "bun:sqlite";
 import type { OptimaTable } from "./schema";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { OptimaTB } from "./table";
+import { MigrateSchema, OptimaTB } from "./table";
 
 
 export type OptimaTablesFromSchema<S extends Record<string, OptimaTB<any,any>>> = {
@@ -110,11 +110,11 @@ export class OptimaDB<S extends Record<string, OptimaTable<any>>> {
       ) as any;
     }
 
-    // // Auto-migrate at startup to match in-code schema
-    // for (const tableName in this.Tables) {
-    //   const t = (this.Tables as any)[tableName] as OptimaTable<any>;
-    //   t.MigrateSchema();
-    // }
+    // Auto-migrate at startup to match in-code schema
+    for (const tableName in this.Tables) {
+      const t = (this.Tables as any)[tableName] as OptimaTable<any>;
+      MigrateSchema(t);
+    }
   }
 
   Batch = (fn:Function) => {

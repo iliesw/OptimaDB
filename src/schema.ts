@@ -194,18 +194,16 @@ export const FieldToSQL = (field: OptimaField<any, any, any>): string => {
 
   const ref = field["Reference"] as
     | {
-        Table: { __tableName: string } | string;
+        Table: OptimaTable<any> ;
         Field: string;
         Type: "Many" | "One";
+        TableName:{ __tableName: string } | string
       }
     | null
     | undefined;
 
   if (ref) {
-    const tableName =
-      typeof ref.Table === "string"
-        ? ref.Table
-        : (ref.Table as any).__tableName;
+    const tableName = ref.TableName;
     parts.push(`REFERENCES ${tableName}(${ref.Field}) ON DELETE CASCADE`);
   }
 

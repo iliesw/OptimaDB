@@ -5,6 +5,7 @@ import {
   applyFormatOut,
   ExtendTables,
   FieldReferenceMany,
+  FieldToSQL,
   isFieldInsertOptional,
   OptimaField,
   OptimaTable,
@@ -682,10 +683,10 @@ const getExistingColumns = (table: OptimaTB<any, any>) => {
   return rows;
 };
 const buildCreateSQLFor = (name: string, table: OptimaTB<any, any>): string => {
-  const colDefs = Object.entries(table["Schema"].cols).map(
+  const colDefs = Object.entries(table["Schema"]).map(
     ([colName, field]) => {
       // Access the internal SQL builder the same way Table() does
-      const def = (field as any)["toSQL"]?.();
+      const def = FieldToSQL(field as OptimaField<any,any,any>);
       return `"${colName}" ${def}`;
     }
   );

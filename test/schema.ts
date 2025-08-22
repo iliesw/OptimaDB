@@ -17,7 +17,7 @@ export const Users = Table("Users", {
   }),
   Email: Email({ notNull: true }),
   Password: Password(),
-  Age: Int(),
+  // Age: Int(),
   Salary: Float(),
 });
 
