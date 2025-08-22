@@ -212,9 +212,9 @@ export const FieldToSQL = (field: OptimaField<any, any, any>): string => {
 
 export const TableToSQL = (table: OptimaTable<any>, name: string): string => {
   const t: any = table as any;
-  const cols: Record<string, OptimaField<any, any>> = t?.cols ?? t ?? {};
+  const cols: Record<string, OptimaField<any, any>> = t;
+  delete cols.__tableName
   const colDefs = Object.entries(cols)
-    .filter(([, v]) => v instanceof OptimaField)
     .map(([colName, field]) => `\`${colName}\` ${FieldToSQL(field)}`);
   return `CREATE TABLE IF NOT EXISTS \`${name}\` (\n  ${colDefs.join(
     ",\n  "
