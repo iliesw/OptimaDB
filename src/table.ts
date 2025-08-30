@@ -451,144 +451,223 @@ const mapOutRow = (table: OptimaTB<any, any>, row: any) => {
   return result;
 };
 const buildWhereClause = (table: OptimaTB<any, any>, where?: any) => {
-  if (
-    !where ||
-    (typeof where === "object" && Object.keys(where).length === 0)
-  ) {
+  if (!where || (typeof where === "object" && Object.keys(where).length === 0)) {
     return { clause: "", params: [] as any[] } as const;
   }
 
-  if (typeof where === "string") {
-    return { clause: ` WHERE ${where}`, params: [] as any[] } as const;
-  }
-
-  if (where && typeof where === "object" && "$raw" in where) {
-    const raw = where.$raw || {};
-    const sql: string = raw.sql || "";
-    const params: any[] = Array.isArray(raw.params) ? raw.params : [];
-    if (!sql) return { clause: "", params: [] } as const;
-    return { clause: ` WHERE ${sql}`, params } as const;
-  }
-
-  const buildForObject = (
-    obj: Record<string, any>
-  ): { part: string; params: any[] } => {
+  const buildForObject = (obj: Record<string, any>): { part: string; params: any[] } => {
     const parts: string[] = [];
     const params: any[] = [];
 
-    // Handle both new Table() format and direct schema format
-    const cols = (table["Schema"] as any).cols || table["Schema"];
+    const cols = table["Schema"];
+    const isJsonOrArrayColumn = (column: string): boolean => {
+      const field = cols[column];
+      return field && (field["Type"] === "JSON" || field["Type"] === "ARRAY");
+    };
 
     const ensureFormatted = (column: string, value: any) => {
       const field = cols[column];
-      if (field) {
-        return applyFormatIn(field, value);
+      return field ? applyFormatIn(field, value) : value;
+    };
+
+    // NEW: for comparing individual JSON array elements (json_each.value)
+    const formatForJsonElement = (value: any) => {
+      if (value === null) return null;
+      if (typeof value === "object") return JSON.stringify(value); // objects/arrays -> JSON string
+      // primitive (number/string/bool) -> leave as-is
+      // if user passed a JSON literal string like '"foo"', normalize it
+      if (typeof value === "string") {
+        if (value.length >= 2 && value[0] === '"' && value[value.length - 1] === '"') {
+          try {
+            const p = JSON.parse(value);
+            if (typeof p !== "object") return p;
+          } catch {}
+        }
       }
       return value;
     };
 
-    const compileColumnOp = (column: string, op: string, value: any) => {
-      switch (op) {
-        case "$eq":
-          parts.push(`"${column}" = ?`);
-          params.push(ensureFormatted(column, value));
-          break;
-        case "$ne":
-          if (value === null) {
-            parts.push(`"${column}" IS NOT NULL`);
-          } else {
-            parts.push(`"${column}" <> ?`);
-            params.push(ensureFormatted(column, value));
-          }
-          break;
-        case "$gt":
-          parts.push(`"${column}" > ?`);
-          params.push(ensureFormatted(column, value));
-          break;
-        case "$gte":
-          parts.push(`"${column}" >= ?`);
-          params.push(ensureFormatted(column, value));
-          break;
-        case "$lt":
-          parts.push(`"${column}" < ?`);
-          params.push(ensureFormatted(column, value));
-          break;
-        case "$lte":
-          parts.push(`"${column}" <= ?`);
-          params.push(ensureFormatted(column, value));
-          break;
-        case "$like":
-          parts.push(`"${column}" LIKE ?`);
-          params.push(ensureFormatted(column, value));
-          break;
-        case "$between": {
-          const [a, b] = Array.isArray(value) ? value : [];
-          parts.push(`"${column}" BETWEEN ? AND ?`);
-          params.push(ensureFormatted(column, a), ensureFormatted(column, b));
-          break;
-        }
-        case "$in": {
-          const arr: any[] = Array.isArray(value) ? value : [];
-          if (arr.length === 0) {
-            parts.push("1 = 0");
-          } else {
-            const placeholders = arr.map(() => "?").join(", ");
-            parts.push(`"${column}" IN (${placeholders})`);
-            params.push(...arr.map((v) => ensureFormatted(column, v)));
-          }
-          break;
-        }
-        case "$nin": {
-          const arr: any[] = Array.isArray(value) ? value : [];
-          if (arr.length === 0) {
-            parts.push("1 = 1");
-          } else {
-            const placeholders = arr.map(() => "?").join(", ");
-            parts.push(`"${column}" NOT IN (${placeholders})`);
-            params.push(...arr.map((v) => ensureFormatted(column, v)));
-          }
-          break;
-        }
-        case "$is": {
-          if (value === null || value === "null") {
-            parts.push(`"${column}" IS NULL`);
-          } else {
-            parts.push(`"${column}" IS NOT NULL`);
-          }
-          break;
-        }
-        case "$not": {
-          if (
-            value !== null &&
-            typeof value === "object" &&
-            !Array.isArray(value)
-          ) {
-            const compiled = buildForObject({ [column]: value });
-            if (compiled.part) {
-              parts.push(`NOT (${compiled.part})`);
-              params.push(...compiled.params);
-            }
-          } else if (Array.isArray(value)) {
-            const placeholders = value.map(() => "?").join(", ");
-            parts.push(`NOT ("${column}" IN (${placeholders}))`);
-            params.push(...value.map((v) => ensureFormatted(column, v)));
-          } else if (value === null) {
-            parts.push(`"${column}" IS NOT NULL`);
-          } else {
-            parts.push(`NOT ("${column}" = ?)`);
-            params.push(ensureFormatted(column, value));
-          }
-          break;
-        }
-        default: {
-          parts.push(`"${column}" = ?`);
-          params.push(ensureFormatted(column, value));
-          break;
-        }
+    const addCondition = (column: string, operator: string, value: any, isJsonCol: boolean = false) => {
+      if (isJsonCol) {
+        parts.push(`json_extract("${column}", '$') ${operator} ?`);
+        params.push(JSON.stringify(value));
+      } else {
+        parts.push(`"${column}" ${operator} ?`);
+        params.push(ensureFormatted(column, value));
       }
     };
 
-    const processNode = (key: string, value: any) => {
+    const addInCondition = (column: string, values: any[], isJsonCol: boolean = false, negated: boolean = false) => {
+      if (values.length === 0) {
+        parts.push(negated ? "1 = 1" : "1 = 0");
+        return;
+      }
+      const placeholders = values.map(() => "?").join(", ");
+      const operator = negated ? "NOT IN" : "IN";
+
+      if (isJsonCol) {
+        // IMPORTANT: compare against json_each.value (element-wise) instead of json_extract('$')
+        // so IN works on array contents. We need an EXISTS to scan the array.
+        parts.push(`EXISTS (
+          SELECT 1 FROM json_each("${column}")
+          WHERE json_each.value ${operator} (${placeholders})
+        )`);
+        params.push(...values.map(formatForJsonElement));
+      } else {
+        parts.push(`"${column}" ${operator} (${placeholders})`);
+        params.push(...values.map(v => ensureFormatted(column, v)));
+      }
+    };
+
+    const processColumnValue = (column: string, value: any) => {
+      const isJsonCol = isJsonOrArrayColumn(column);
+
+      // Handle null
+      if (value === null) {
+        parts.push(`"${column}" IS NULL`);
+        return;
+      }
+
+      // Handle arrays – automatic IN for scalars; JSON array → contains-any
+      if (Array.isArray(value)) {
+        if (isJsonCol) {
+          // contains-all semantics: require an EXISTS per element (AND them)
+          if (value.length === 0) {
+            // empty array => match everything (vacuously true)
+            parts.push("1 = 1");
+            return;
+          }
+          const existsClauses: string[] = [];
+          for (let i = 0; i < value.length; i++) {
+            existsClauses.push(`EXISTS (
+              SELECT 1 FROM json_each("${column}")
+              WHERE json_each.value = ?
+            )`);
+          }
+          parts.push(existsClauses.join(" AND "));
+          params.push(...value.map(formatForJsonElement));
+        } else {
+          addInCondition(column, value, isJsonCol);
+        }
+        return;
+      }
+
+      // Handle objects with operators
+      if (typeof value === "object" && value !== null) {
+        const hasOperators = Object.keys(value).some(key => key.startsWith('$'));
+        if (hasOperators) {
+          for (const [op, opValue] of Object.entries(value)) {
+            switch (op) {
+              case "$eq":
+                addCondition(column, "=", opValue, isJsonCol);
+                break;
+              case "$ne":
+                if (opValue === null) {
+                  parts.push(`"${column}" IS NOT NULL`);
+                } else {
+                  addCondition(column, "<>", opValue, isJsonCol);
+                }
+                break;
+              case "$gt":
+                addCondition(column, ">", opValue, isJsonCol);
+                break;
+              case "$gte":
+                addCondition(column, ">=", opValue, isJsonCol);
+                break;
+              case "$lt":
+                addCondition(column, "<", opValue, isJsonCol);
+                break;
+              case "$lte":
+                addCondition(column, "<=", opValue, isJsonCol);
+                break;
+              case "$like":
+                addCondition(column, "LIKE", opValue, isJsonCol);
+                break;
+              case "$between": {
+                const [a, b] = Array.isArray(opValue) ? opValue : [];
+                if (isJsonCol) {
+                  parts.push(`json_extract("${column}", '$') BETWEEN ? AND ?`);
+                  params.push(JSON.stringify(a), JSON.stringify(b));
+                } else {
+                  parts.push(`"${column}" BETWEEN ? AND ?`);
+                  params.push(ensureFormatted(column, a), ensureFormatted(column, b));
+                }
+                break;
+              }
+              case "$in":
+                addInCondition(column, Array.isArray(opValue) ? opValue : [], isJsonCol);
+                break;
+              case "$nin":
+                addInCondition(column, Array.isArray(opValue) ? opValue : [], isJsonCol, true);
+                break;
+              case "$is":
+                if (opValue === null || opValue === "null") {
+                  parts.push(`"${column}" IS NULL`);
+                } else {
+                  parts.push(`"${column}" IS NOT NULL`);
+                }
+                break;
+              case "$not":
+                if (typeof opValue === "object" && !Array.isArray(opValue)) {
+                  const compiled = buildForObject({ [column]: opValue });
+                  if (compiled.part) {
+                    parts.push(`NOT (${compiled.part})`);
+                    params.push(...compiled.params);
+                  }
+                } else if (Array.isArray(opValue)) {
+                  addInCondition(column, opValue, isJsonCol, true);
+                } else if (opValue === null) {
+                  parts.push(`"${column}" IS NOT NULL`);
+                } else {
+                  addCondition(column, "<>", opValue, isJsonCol);
+                }
+                break;
+              default:
+                if (op.startsWith('$path:')) {
+                  const jsonPath = op.substring(6);
+                  const path = jsonPath || '$';
+                  parts.push(`json_extract("${column}", '${path}') = ?`);
+                  params.push(JSON.stringify(opValue));
+                } else {
+                  addCondition(column, "=", opValue, isJsonCol);
+                }
+                break;
+            }
+          }
+        } else {
+          // Direct object comparison for JSON columns
+          if (isJsonCol) {
+            parts.push(`json_extract("${column}", '$') = ?`);
+            params.push(JSON.stringify(value));
+          } else {
+            throw new Error(`Cannot compare object value with non-JSON column "${column}"`);
+          }
+        }
+        return;
+      }
+
+      // Primitive values – equality
+      if (isJsonCol) {
+        let jsonValue = value;
+        if (typeof value === 'string') {
+          try {
+            JSON.parse(value);
+            jsonValue = value; // already JSON literal
+          } catch {
+            jsonValue = JSON.stringify(value);
+          }
+        } else {
+          jsonValue = JSON.stringify(value);
+        }
+        parts.push(`json_extract("${column}", '$') = ?`);
+        params.push(jsonValue);
+      } else {
+        parts.push(`"${column}" = ?`);
+        params.push(ensureFormatted(column, value));
+      }
+    };
+
+    for (const [key, value] of Object.entries(obj)) {
       if (key === "$or" || key === "$and") {
         const joiner = key === "$or" ? "OR" : "AND";
         const arr = Array.isArray(value) ? value : [value];
@@ -607,41 +686,9 @@ const buildWhereClause = (table: OptimaTB<any, any>, where?: any) => {
           parts.push(subParts.join(` ${joiner} `));
           params.push(...subParams);
         }
-        return;
+      } else {
+        processColumnValue(key, value);
       }
-
-      const column = key;
-      const valueRef = value;
-
-      if (valueRef === null) {
-        parts.push(`"${column}" IS NULL`);
-        return;
-      }
-
-      if (Array.isArray(valueRef)) {
-        if (valueRef.length === 0) {
-          parts.push("1 = 0");
-        } else {
-          const placeholders = valueRef.map(() => "?").join(", ");
-          parts.push(`"${column}" IN (${placeholders})`);
-          params.push(...valueRef.map((v) => ensureFormatted(column, v)));
-        }
-        return;
-      }
-
-      if (typeof valueRef === "object") {
-        for (const [op, v] of Object.entries(valueRef)) {
-          compileColumnOp(column, op, v);
-        }
-        return;
-      }
-
-      parts.push(`"${column}" = ?`);
-      params.push(ensureFormatted(column, valueRef));
-    };
-
-    for (const [key, value] of Object.entries(obj)) {
-      processNode(key, value);
     }
 
     return { part: parts.join(" AND "), params };
@@ -655,6 +702,9 @@ const buildWhereClause = (table: OptimaTB<any, any>, where?: any) => {
     params: compiled.params,
   } as const;
 };
+
+
+
 const tableExists = (table: OptimaTB<any, any>): boolean => {
   const row = table["InternalDBReference"]
     .query("SELECT name FROM sqlite_master WHERE type='table' AND name = ?")

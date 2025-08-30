@@ -17,7 +17,8 @@ export const Users = Table("Users", {
   }),
   Email: Email({ notNull: true }),
   Password: Password(),
-  // Age: Int(),
+  JSON: Json(),
+  Array:Array(),
   Salary: Float(),
 });
 

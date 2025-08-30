@@ -1,9 +1,13 @@
 {
   "name": "@inflector/db",
-  "version": "1.5.3",
+  "version": "1.6.0",
+  "author": "Inflector",
   "main": "./dist/index.js",
   "module": "./dist/index.js",
-  "types": "./dist/index.d.ts",
+  "devDependencies": {
+    "@types/bun": "latest",
+    "typescript": "^5.0.0"
+  },
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
@@ -17,20 +21,16 @@
     },
     "./package.json": "./package.json"
   },
-  "license": "IPAL v1.0",
-  "author": "Inflector",
-  "devDependencies": {
-    "@types/bun": "latest",
-    "typescript": "^5.0.0"
-  },
-  "scripts": {
-    "build": "tsc",
-    "prepublishOnly": "npm run build"
-  },
   "files": [
     "dist",
     "README.md",
     "LICENSE"
   ],
-  "type": "module"
+  "license": "IPAL v1.0",
+  "scripts": {
+    "build": "tsc",
+    "prepublishOnly": "npm run build"
+  },
+  "type": "module",
+  "types": "./dist/index.d.ts"
 }

@@ -63,7 +63,7 @@ export type TableReferencesTableByMany<
     : false;
 }>;
 
-type HasAtLeastOneTrue<T extends Record<string, boolean>> =
+export type HasAtLeastOneTrue<T extends Record<string, boolean>> =
   true extends T[keyof T] ? true : false;
 
 export type TableReferencesTable<
@@ -75,7 +75,7 @@ export type TableReferencesTable<
     : false;
 }>;
 
-type GetNonNeverStringValues<T extends Record<string, any>> = {
+export type GetNonNeverStringValues<T extends Record<string, any>> = {
   // Iterate over each key K in the input type T
   [K in keyof T]: T[K] extends never // Check if the value type T[K] is 'never'
     ? never // If it's 'never', replace it with 'never' (to be filtered out later)
@@ -384,15 +384,17 @@ export function UUID<O extends BaseFieldOptions>(options?: O) {
 }
 
 export function Array<O extends BaseFieldOptions>(options?: O) {
-  return new OptimaField<any[], { [K in keyof O]: O[K] }>(
+  return new OptimaField<number[] | string[], { [K in keyof O]: O[K] }>(
     FieldTypes.Array,
     (options ?? {}) as { [K in keyof O]: O[K] }
   );
 }
 
 export function Json<O extends BaseFieldOptions>(options?: O) {
-  return new OptimaField<any, { [K in keyof O]: O[K] }>(
+  return new OptimaField<Record<string, any>, { [K in keyof O]: O[K] }>(
     FieldTypes.Json,
     (options ?? {}) as { [K in keyof O]: O[K] }
   );
 }
+
+

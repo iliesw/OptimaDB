@@ -101,6 +101,76 @@ export const Users = Table("Users", {
   DB.Tables.Users.Delete({ ID: { $in: [2, 3] } });
   ```
 
+## JSON Operators
+
+OptimaDB supports powerful JSON operators for querying JSON fields:
+
+### Basic JSON Operations
+
+```ts
+// Check if JSON contains a value
+const admins = DB.Tables.Users.Get({ 
+  metadata: { $json_contains: "admin" } 
+});
+
+// Extract and compare JSON path values
+const darkThemeUsers = DB.Tables.Users.Get({ 
+  preferences: { $json_extract: { path: "$.theme", value: "dark" } } 
+});
+
+// Check if JSON has a specific key
+const usersWithRole = DB.Tables.Users.Get({ 
+  metadata: { $json_has_key: "$.role" } 
+});
+```
+
+### Advanced JSON Operations
+
+```ts
+// Check JSON type
+const arrayFields = DB.Tables.Users.Get({ 
+  tags: { $json_type: { path: "$", type: "array" } } 
+});
+
+// Check JSON array length
+const usersWithManyTags = DB.Tables.Users.Get({ 
+  tags: { $json_length: { path: "$", operator: "gt", length: 3 } } 
+});
+
+// Search within JSON
+const developers = DB.Tables.Users.Get({ 
+  metadata: { $json_search: { path: "$.description", query: "developer" } } 
+});
+
+// Check if JSON contains all/any specified keys
+const completeProfiles = DB.Tables.Users.Get({ 
+  metadata: { $json_contains_all: ["$.role", "$.department", "$.level"] } 
+});
+
+const partialProfiles = DB.Tables.Users.Get({ 
+  metadata: { $json_contains_any: ["$.role", "$.department"] } 
+});
+
+// Validate JSON format
+const validJsonUsers = DB.Tables.Users.Get({ 
+  metadata: { $json_valid: true } 
+});
+```
+
+### Complex JSON Queries
+
+```ts
+const complexQuery = {
+  $and: [
+    { metadata: { $json_extract: { path: "$.role", value: "admin" } } },
+    { preferences: { $json_length: { path: "$.features", operator: "gte", length: 5 } } },
+    { tags: { $json_contains_any: ["javascript", "typescript"] } }
+  ]
+};
+
+const results = DB.Tables.Users.Get(complexQuery);
+```
+
 ## RoadMap
 
 - Additional examples and guides
