@@ -69,6 +69,7 @@ export type WhereOperatorObject<T> = {
   $nin?: T[];
   $is?: null | "null" | "not-null";
   $not?: WhereOperatorObject<T> | T | T[] | null;
+  $includes?: T extends (infer U)[] ? U : T;
 };
 export type UpdateChanges<T extends OptimaTable<Record<string, any>>> =
   Partial<{
@@ -620,6 +621,19 @@ const buildWhereClause = (table: OptimaTB<any, any>, where?: any) => {
                   parts.push(`"${column}" IS NOT NULL`);
                 } else {
                   addCondition(column, "<>", opValue, isJsonCol);
+                }
+                break;
+              case "$includes":
+                if (isJsonCol) {
+                  // For JSON/Array columns, check if the value exists in the array
+                  parts.push(`EXISTS (
+                    SELECT 1 FROM json_each("${column}")
+                    WHERE json_each.value = ?
+                  )`);
+                  params.push(formatForJsonElement(opValue));
+                } else {
+                  // For non-JSON columns, this doesn't make sense
+                  throw new Error(`$includes operator can only be used with JSON/Array columns, but "${column}" is not a JSON/Array column`);
                 }
                 break;
               default:

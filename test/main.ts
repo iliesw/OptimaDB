@@ -11,4 +11,4 @@ DB.Tables.Users.Insert({
   Array: [123, 123, 123],
 });
 
-console.log(DB.Tables.Users.Get({ JSON: { Test: "123" } }));
+console.log(DB.Tables.Users.Get({ Array: { $includes: 1223 } }));
