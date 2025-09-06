@@ -5,21 +5,25 @@ import {
   Array,
   Password,
   Json,
-  Day,
   Float,
-  isFieldInsertOptional,
+  Time,
+  Boolean,
 } from "../src";
 
 export const Users = Table("Users", {
   ID: Int({
-    primaryKey: true,
-    autoIncrement: true,
+    check: (e) => {
+      return e > 0;
+    },
+    autoIncrement:true,
   }),
   Email: Email({ notNull: true }),
   Password: Password(),
-  JSON: Json(),
-  Array:Array(),
-  Salary: Float(),
+  isHuman: Boolean(),
+  JSON: Json({ default: { Field1: 123 } }),
+  Array: Array({ default: [123, 1234] }),
+  Dates: Time({ default: new Date() }),
+  Salary: Float({ enum: [1.5, 1.7, 1.9] }),
 });
 
 export const Profile = Table("Profile", {
@@ -42,7 +46,6 @@ export const Posts = Table("Posts", {
   }),
   UserID: Int().reference(Users, "ID", "Many"),
   Content: Json(),
-  CreatedAt: Day(),
 });
 
 export const Comments = Table("Comments", {
@@ -53,7 +56,4 @@ export const Comments = Table("Comments", {
   PostID: Int().reference(Posts, "ID", "Many"),
   UserID: Int().reference(Users, "ID", "Many"),
   Content: Json(),
-  CreatedAt: Day(),
 });
-
-

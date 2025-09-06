@@ -2,24 +2,107 @@ export type OptimaTable<
   TColumns extends Record<string, OptimaField<any, any, any>>
 > = TColumns;
 
-export function Table<
-  TColumns extends Record<string, OptimaField<any, any, any>>
->(name: string, cols: TColumns): TColumns & { __tableName: string } {
-  return Object.assign({}, cols, { __tableName: name });
-}
+export type GetType<
+  T extends OptimaTable<any>,
+  K extends ExtendTables<T, S> | Array<ExtendTables<T, S>>,
+  S extends Record<string, OptimaTable<any>>
+> = {
+  [P in keyof T as P extends "__tableName"
+    ? never
+    : P]: T[P] extends OptimaField<any, any, any>
+    ? OptimaFieldToTS<T[P]>
+    : never;
+} & (K extends string
+  ? {
+      [Key in K as `$${Extract<Key, string>}`]: TableReferencesTableByMany<
+        S[K],
+        T
+      > extends true
+        ? RowOf<S[K]>[]
+        : RowOf<S[K]>;
+    }
+  : K extends readonly (keyof S)[]
+  ? {
+      [Key in K[number] as `$${Extract<
+        Key,
+        string
+      >}`]: TableReferencesTableByMany<S[Key], T> extends true
+        ? RowOf<S[Key]>[]
+        : RowOf<S[Key]>;
+    }
+  : {});
 
-export type isFieldInsertOptional<T> =
-  T extends OptimaField<any, infer O, any>
-    ? O extends { primaryKey: true }
-      ? O extends { autoIncrement: true }
-        ? true   // primary + autoincrement → optional
-        : false  // primary without autoincrement → required
-      : O extends { notNull: infer N }
-        ? [N] extends [true]
-          ? false // explicitly notNull: true → required
-          : true
-        : true
-    : false;
+export type OptimaFieldToTS<F extends OptimaField<any, any, any>> =
+  F extends OptimaField<infer K, any, any> ? K : never;
+
+export type ColumnWhere<T> = T | null | T[] | WhereOperatorObject<T>;
+export type BasicWhere<TDef extends OptimaTable<Record<string, any>>> = {
+  [K in keyof TDef as K extends "__tableName" ? never : K]?: ColumnWhere<
+    OptimaFieldToTS<TDef[K]>
+  >;
+};
+export type WhereInput<TDef extends OptimaTable<Record<string, any>>> =
+  | BasicWhere<TDef> & {
+      $or?: WhereInput<TDef>[];
+      $and?: WhereInput<TDef>[];
+    };
+export type WhereOperatorObject<T> = {
+  $eq?: T;
+  $ne?: T | null;
+  $gt?: T;
+  $gte?: T;
+  $lt?: T;
+  $lte?: T;
+  $like?: string;
+  $between?: [T, T];
+  $in?: T[];
+  $nin?: T[];
+  $is?: null | "null" | "not-null";
+  $not?: WhereOperatorObject<T> | T | T[] | null;
+  $includes?: T extends (infer U)[] ? U : T;
+};
+export type UpdateChanges<T extends OptimaTable<Record<string, any>>> =
+  Partial<{
+    [K in keyof T as K extends "__tableName" ? never : K]: OptimaFieldToTS<
+      T[K]
+    >;
+  }>;
+
+export type RowOf<TDef extends OptimaTable<Record<string, any>>> = {
+  [K in keyof TDef as K extends "__tableName" ? never : K]: OptimaFieldToTS<
+    TDef[K]
+  >;
+};
+export type InsertInput<
+  TDef extends OptimaTable<Record<string, OptimaField<any, any, any>>>
+> =
+  // Required keys
+  {
+    [K in keyof TDef as K extends "__tableName"
+      ? never
+      : isFieldInsertOptional<TDef[K]> extends true
+      ? never
+      : K]: OptimaFieldToTS<TDef[K]>;
+  } & {
+    // Optional keys
+    [K in keyof TDef as K extends "__tableName"
+      ? never
+      : isFieldInsertOptional<TDef[K]> extends true
+      ? K
+      : never]?: OptimaFieldToTS<TDef[K]>;
+  };
+
+export type isFieldInsertOptional<T> = T extends OptimaField<any, infer O, any>
+  ? O extends { primaryKey: true }
+    ? O extends { autoIncrement: true }
+      ? true // primary + autoincrement → optional
+      : false // primary without autoincrement → required
+    : O extends { notNull: infer N }
+    ? [N] extends [true]
+      ? false // explicitly notNull: true → required
+      : true
+    : true
+  : false;
 
 export type FieldReference<T> = T extends OptimaField<any, any, infer R>
   ? R
@@ -98,14 +181,14 @@ export class OptimaField<
     enum?: any[];
     primaryKey?: boolean;
     unique?: boolean;
-    check?: string;
+    check?: (value: TsType) => boolean;
     autoIncrement?: boolean;
   },
   Ref extends {
     Table: OptimaTable<any> | string; // allow typed table or plain string
     Field: string;
     Type: "Many" | "One";
-    TableName:string
+    TableName: string;
   } | null = null
 > {
   private Type: FieldTypes;
@@ -114,7 +197,7 @@ export class OptimaField<
   private Enum?: TsType[] | null;
   private Reference?: Ref | null; // <-- use Ref here
   private Unique?: boolean | null;
-  private Check?: string | null;
+  private Check?: ((value: TsType) => boolean) | null;
   private NotNull?: boolean | null;
   private PrimaryKey?: boolean | null;
   private AutoIncrement?: boolean | null;
@@ -124,7 +207,7 @@ export class OptimaField<
     this.NotNull = options?.notNull ? true : false;
     this.Default = options?.default ?? null;
     this.Enum = options?.enum ?? null;
-    this.PrimaryKey = options?.primaryKey ?? null;
+    this.PrimaryKey = options?.primaryKey ?? options?.autoIncrement ?? null;
     this.Unique = options?.unique ?? null;
     this.Check = options?.check ?? null;
     this.AutoIncrement = options?.autoIncrement ?? null;
@@ -153,18 +236,28 @@ export class OptimaField<
     Table: TB,
     Field: F,
     type: K
-  ): OptimaField<TsType, Options, { Table: TB; Field: F & string; Type: K ,TableName:string}> {
+  ): OptimaField<
+    TsType,
+    Options,
+    { Table: TB; Field: F & string; Type: K; TableName: string }
+  > {
     // store a typed object so Ref is preserved at the type level
     const ref = {
       Table,
       Field: Field as F & string,
       Type: type,
-      TableName:Table["__tableName"]
-    } as { Table: TB; Field: F & string; Type: K ,TableName:string};
+      TableName: Table["__tableName"],
+    } as { Table: TB; Field: F & string; Type: K; TableName: string };
 
     (this as any).Reference = ref;
     return this as any;
   }
+}
+
+export function Table<
+  TColumns extends Record<string, OptimaField<any, any, any>>
+>(name: string, cols: TColumns): TColumns & { __tableName: string } {
+  return Object.assign({}, cols, { __tableName: name });
 }
 
 // --------------------
@@ -180,31 +273,45 @@ export const FieldToSQL = (field: OptimaField<any, any, any>): string => {
   if (field["NotNull"]) parts.push("NOT NULL");
   if (field["Unique"]) parts.push("UNIQUE");
   if (field["Default"] !== null && field["Default"] !== undefined) {
-    const defVal =
-      typeof field["Default"] === "string"
-        ? `'${field["Default"]}'`
-        : field["Default"];
+    let defVal: string;
+
+    // Handle JSON and Array types specially for default values
+    if (
+      field["Type"] === FieldTypes.Json ||
+      field["Type"] === FieldTypes.Array
+    ) {
+      // For JSON/Array fields, serialize the default value as JSON
+      defVal = `'${JSON.stringify(field["Default"]).replace(/'/g, "''")}'`;
+    } else if (
+      field["Type"] === FieldTypes.DateTime &&
+      field["Default"] instanceof Date
+    ) {
+      // For DateTime fields, format as ISO string
+      defVal = `'${field["Default"].toISOString().replace(/'/g, "''")}'`;
+    } else if (typeof field["Default"] === "string") {
+      // For string fields, escape single quotes
+      defVal = `'${field["Default"].replace(/'/g, "''")}'`;
+    } else {
+      // For other types, convert to string
+      defVal = String(field["Default"]);
+    }
+
     parts.push(`DEFAULT ${defVal}`);
   }
-  if (field["Enum"]) {
-    const enumVals = field["Enum"].map((v) => `'${v}'`).join(", ");
-    parts.push(`CHECK (value IN (${enumVals}))`);
-  }
-  if (field["Check"]) parts.push(`CHECK (${field["Check"]})`);
 
   const ref = field["Reference"] as
     | {
-        Table: OptimaTable<any> ;
+        Table: OptimaTable<any> | string;
         Field: string;
         Type: "Many" | "One";
-        TableName:{ __tableName: string } | string
+        TableName: string;
       }
     | null
     | undefined;
 
   if (ref) {
     const tableName = ref.TableName;
-    parts.push(`REFERENCES ${tableName}(${ref.Field}) ON DELETE CASCADE`);
+    parts.push(`REFERENCES "${tableName}"("${ref.Field}") ON DELETE CASCADE`);
   }
 
   return parts.join(" ");
@@ -213,9 +320,10 @@ export const FieldToSQL = (field: OptimaField<any, any, any>): string => {
 export const TableToSQL = (table: OptimaTable<any>, name: string): string => {
   const t: any = table as any;
   const cols: Record<string, OptimaField<any, any>> = t;
-  delete cols.__tableName
-  const colDefs = Object.entries(cols)
-    .map(([colName, field]) => `\`${colName}\` ${FieldToSQL(field)}`);
+  delete cols.__tableName;
+  const colDefs = Object.entries(cols).map(
+    ([colName, field]) => `\`${colName}\` ${FieldToSQL(field)}`
+  );
   return `CREATE TABLE IF NOT EXISTS \`${name}\` (\n  ${colDefs.join(
     ",\n  "
   )}\n);`;
@@ -281,13 +389,13 @@ export function applyFormatOut(field: OptimaField<any, any>, value: any): any {
 // --------------------
 // Config Types
 // --------------------
-export type FieldOptions = {
+export type FieldOptions<T = any> = {
   notNull?: boolean;
   default?: any;
   enum?: any[];
   primaryKey?: boolean;
   unique?: boolean;
-  check?: string;
+  check?: (value: T) => boolean;
   autoIncrement?: boolean;
 };
 
@@ -311,90 +419,218 @@ export enum FieldTypes {
   Json = "JSON",
 }
 
-type BaseFieldOptions = {
+type BaseFieldOptions<T = any> = {
   notNull?: boolean;
   default?: any;
   enum?: any[];
   primaryKey?: boolean;
   unique?: boolean;
-  check?: string;
+  check?: (value: T) => boolean;
   autoIncrement?: boolean;
 };
-export function Int<O extends BaseFieldOptions>(options?: O) {
+export function Int<O extends BaseFieldOptions<number>>(options?: O) {
   return new OptimaField<number, { [K in keyof O]: O[K] }>(
     FieldTypes.Int,
     (options ?? {}) as { [K in keyof O]: O[K] }
   );
 }
 
-export function Float<O extends BaseFieldOptions>(options?: O) {
+export function Float<O extends BaseFieldOptions<number>>(options?: {
+  notNull?: boolean;
+  default?: any;
+  enum?: any[];
+  unique?: boolean;
+  check?: (value: number) => boolean;
+}) {
+  const FloatOptions: BaseFieldOptions<number> = {
+    autoIncrement: false,
+    primaryKey: false,
+    unique: options?.unique,
+    enum: options?.enum,
+    check: options?.check,
+    default: options?.default,
+    notNull: options?.notNull,
+  };
   return new OptimaField<number, { [K in keyof O]: O[K] }>(
     FieldTypes.Float,
-    (options ?? {}) as { [K in keyof O]: O[K] }
+    (FloatOptions ?? {}) as { [K in keyof O]: O[K] }
   );
 }
 
-export function Boolean<O extends BaseFieldOptions>(options?: O) {
+export function Boolean<O extends BaseFieldOptions<boolean>>(options?: {
+  check?: (value: boolean) => boolean;
+  default?: boolean;
+  notNull?: boolean;
+}) {
+  const BooleanOptions: BaseFieldOptions<boolean> = {
+    autoIncrement: false,
+    primaryKey: false,
+    unique: false,
+    enum: [false, true],
+    check: options?.check,
+    default: options?.default,
+    notNull: options?.notNull,
+  };
   return new OptimaField<boolean, { [K in keyof O]: O[K] }>(
     FieldTypes.Boolean,
-    (options ?? {}) as { [K in keyof O]: O[K] }
+    (BooleanOptions ?? {}) as { [K in keyof O]: O[K] }
   );
 }
 
-export function Text<O extends BaseFieldOptions>(options?: O) {
+export function Text<O extends BaseFieldOptions<string>>(options?: {
+  notNull?: boolean;
+  default?: any;
+  enum?: any[];
+  primaryKey?: boolean;
+  unique?: boolean;
+  check?: (value: string) => boolean;
+}) {
+  const TextOptions: BaseFieldOptions<string> = {
+    autoIncrement: false,
+    primaryKey: options?.primaryKey,
+    unique: options?.unique,
+    enum: options?.enum,
+    check: options?.check,
+    default: options?.default,
+    notNull: options?.notNull,
+  };
   return new OptimaField<string, { [K in keyof O]: O[K] }>(
     FieldTypes.Text,
-    (options ?? {}) as { [K in keyof O]: O[K] }
+    (TextOptions ?? {}) as { [K in keyof O]: O[K] }
   );
 }
 
-export function Password<O extends BaseFieldOptions>(options?: O) {
+export function Password<O extends BaseFieldOptions<string>>(options?: {
+  notNull?: boolean;
+  check?: (value: string) => boolean;
+}) {
+  const PasswordOptions: BaseFieldOptions<string> = {
+    autoIncrement: false,
+    primaryKey: false,
+    unique: false,
+    enum: undefined,
+    check: options?.check,
+    default: undefined,
+    notNull: options?.notNull,
+  };
   return new OptimaField<string, { [K in keyof O]: O[K] }>(
     FieldTypes.Password,
-    (options ?? {}) as { [K in keyof O]: O[K] }
+    (PasswordOptions ?? {}) as { [K in keyof O]: O[K] }
   );
 }
 
-export function Email<O extends BaseFieldOptions>(options?: O) {
+export function Email<O extends BaseFieldOptions<string>>(options?: {
+  notNull?: boolean;
+  default?: any;
+  enum?: any[];
+  primaryKey?: boolean;
+  unique?: boolean;
+  check?: (value: string) => boolean;
+}) {
+  const EmailOptions: BaseFieldOptions<string> = {
+    autoIncrement: false,
+    primaryKey: options?.primaryKey,
+    unique: options?.unique,
+    enum: options?.enum,
+    check: options?.check,
+    default: options?.default,
+    notNull: options?.notNull,
+  };
   return new OptimaField<string, { [K in keyof O]: O[K] }>(
     FieldTypes.Email,
-    (options ?? {}) as { [K in keyof O]: O[K] }
+    (EmailOptions ?? {}) as { [K in keyof O]: O[K] }
   );
 }
 
-export function DateTime<O extends BaseFieldOptions>(options?: O) {
+export function Time<O extends BaseFieldOptions<Date>>(options?: {
+  notNull?: boolean;
+  default?: any;
+  enum?: any[];
+  unique?: boolean;
+  check?: (value: Date) => boolean;
+}) {
+  const DateTimeOptions: BaseFieldOptions<Date> = {
+    autoIncrement: false,
+    primaryKey: false,
+    unique: options?.unique,
+    enum: options?.enum,
+    check: options?.check,
+    default: options?.default,
+    notNull: options?.notNull,
+  };
   return new OptimaField<Date, { [K in keyof O]: O[K] }>(
     FieldTypes.DateTime,
-    (options ?? {}) as { [K in keyof O]: O[K] }
+    (DateTimeOptions ?? {}) as { [K in keyof O]: O[K] }
   );
 }
 
-export function Day<O extends BaseFieldOptions>(options?: O) {
-  return new OptimaField<string, { [K in keyof O]: O[K] }>(
-    FieldTypes.Day,
-    (options ?? {}) as { [K in keyof O]: O[K] }
-  );
-}
 
-export function UUID<O extends BaseFieldOptions>(options?: O) {
+
+export function UUID<O extends BaseFieldOptions<string>>(options?: {
+  notNull?: boolean;
+  enum?: any[];
+  primaryKey?: boolean;
+  check?: (value: string) => boolean;
+}) {
+  const UUIDOptions: BaseFieldOptions<string> = {
+    autoIncrement: false,
+    primaryKey: options?.primaryKey,
+    unique: true,
+    enum: options?.enum,
+    check: options?.check,
+    default: undefined,
+    notNull: options?.notNull,
+  };
   return new OptimaField<string, { [K in keyof O]: O[K] }>(
     FieldTypes.UUID,
-    (options ?? {}) as { [K in keyof O]: O[K] }
+    (UUIDOptions ?? {}) as { [K in keyof O]: O[K] }
   );
 }
 
-export function Array<O extends BaseFieldOptions>(options?: O) {
+export function Array<O extends BaseFieldOptions<number[] | string[]>>(
+  options?: {
+    notNull?: boolean;
+    default?: any;
+    enum?: any[];
+    unique?: boolean;
+    check?: (value: number[] | string[]) => boolean;
+  }
+) {
+  const ArrayOptions: BaseFieldOptions<number[] | string[]> = {
+    autoIncrement: false,
+    primaryKey: false,
+    unique: options?.unique,
+    enum: options?.enum,
+    check: options?.check,
+    default: options?.default,
+    notNull: options?.notNull,
+  };
   return new OptimaField<number[] | string[], { [K in keyof O]: O[K] }>(
     FieldTypes.Array,
-    (options ?? {}) as { [K in keyof O]: O[K] }
+    (ArrayOptions ?? {}) as { [K in keyof O]: O[K] }
   );
 }
 
-export function Json<O extends BaseFieldOptions>(options?: O) {
+export function Json<O extends BaseFieldOptions<Record<string, any>>>(
+  options?: {
+    notNull?: boolean;
+    default?: any;
+    enum?: any[];
+    unique?: boolean;
+    check?: (value: number[] | string[]) => boolean;
+  }
+) {
+  const JsonOptions: BaseFieldOptions<Record<string, any>> = {
+    autoIncrement: false,
+    primaryKey: false,
+    unique: options?.unique,
+    enum: options?.enum,
+    check: options?.check,
+    default: options?.default,
+    notNull: options?.notNull,
+  };
   return new OptimaField<Record<string, any>, { [K in keyof O]: O[K] }>(
     FieldTypes.Json,
-    (options ?? {}) as { [K in keyof O]: O[K] }
+    (JsonOptions ?? {}) as { [K in keyof O]: O[K] }
   );
 }
-
-

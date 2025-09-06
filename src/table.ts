@@ -6,98 +6,19 @@ import {
   ExtendTables,
   FieldReferenceMany,
   FieldToSQL,
+  GetType,
+  InsertInput,
   isFieldInsertOptional,
   OptimaField,
   OptimaTable,
   TableReferencesTableByMany,
   TableToSQL,
+  UpdateChanges,
+  WhereInput,
 } from "./schema";
 import { EventEmitter } from "events";
 
-type GetType<
-  T extends OptimaTable<any>,
-  K extends ExtendTables<T, S> | Array<ExtendTables<T, S>>,
-  S extends Record<string, OptimaTable<any>>
-> = {
-  [P in keyof T as P extends "__tableName"
-    ? never
-    : P]: T[P] extends OptimaField<any, any, any>
-    ? OptimaFieldToTS<T[P]>
-    : never;
-} & (K extends string
-  ? {
-      [Key in K as `$${Extract<Key, string>}`]: TableReferencesTableByMany<
-        S[K],
-        T
-      > extends true
-        ? RowOf<S[K]>[]
-        : RowOf<S[K]>;
-    }
-  : K extends readonly (keyof S)[]
-  ? {
-      [Key in K[number] as `$${Extract<
-        Key,
-        string
-      >}`]: TableReferencesTableByMany<S[Key], T> extends true
-        ? RowOf<S[Key]>[]
-        : RowOf<S[Key]>;
-    }
-  : {});
 
-type OptimaFieldToTS<F extends OptimaField<any, any, any>> =
-  F extends OptimaField<infer K, any, any> ? K : never;
-
-export type ColumnWhere<T> = T | null | T[] | WhereOperatorObject<T>;
-export type BasicWhere<TDef extends OptimaTable<Record<string, any>>> = {
-  [K in keyof TDef as K extends "__tableName" ? never : K]?: ColumnWhere<OptimaFieldToTS<TDef[K]>>;
-};
-export type WhereInput<TDef extends OptimaTable<Record<string, any>>> =
-  | BasicWhere<TDef> & {
-      $or?: WhereInput<TDef>[];
-      $and?: WhereInput<TDef>[];
-    };
-export type WhereOperatorObject<T> = {
-  $eq?: T;
-  $ne?: T | null;
-  $gt?: T;
-  $gte?: T;
-  $lt?: T;
-  $lte?: T;
-  $like?: string;
-  $between?: [T, T];
-  $in?: T[];
-  $nin?: T[];
-  $is?: null | "null" | "not-null";
-  $not?: WhereOperatorObject<T> | T | T[] | null;
-  $includes?: T extends (infer U)[] ? U : T;
-};
-export type UpdateChanges<T extends OptimaTable<Record<string, any>>> =
-  Partial<{
-    [K in keyof T as K extends "__tableName" ? never : K]: OptimaFieldToTS<T[K]>;
-  }>;
-
-export type RowOf<TDef extends OptimaTable<Record<string, any>>> = {
-  [K in keyof TDef as K extends "__tableName" ? never : K]: OptimaFieldToTS<
-    TDef[K]
-  >;
-};
-export type InsertInput<
-  TDef extends OptimaTable<Record<string, OptimaField<any, any, any>>>
-> =
-  // Required keys
-  {
-    [K in keyof TDef as K extends "__tableName"
-      ? never
-      : isFieldInsertOptional<TDef[K]> extends true
-      ? never
-      : K]: OptimaFieldToTS<TDef[K]>;
-  } & { // Optional keys
-    [K in keyof TDef as K extends "__tableName"
-      ? never
-      : isFieldInsertOptional<TDef[K]> extends true
-      ? K
-      : never]?: OptimaFieldToTS<TDef[K]>;
-  };
 
 export class OptimaTB<
   T extends OptimaTable<Record<string, any>>,
