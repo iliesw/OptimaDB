@@ -7,7 +7,8 @@ import {
   Json,
   Float,
   Time,
-  Boolean,
+  Text,
+  isFieldInsertOptional,
 } from "../src";
 
 export const Users = Table("Users", {
@@ -15,11 +16,11 @@ export const Users = Table("Users", {
     check: (e) => {
       return e > 0;
     },
-    autoIncrement:true,
+    autoIncrement: true,
   }),
-  Email: Email({ notNull: true }),
-  Password: Password(),
-  isHuman: Boolean(),
+  Email: Email({}),
+  Password: Password({ notNull:true }),
+  isHuman: Text({}),
   JSON: Json({ default: { Field1: 123 } }),
   Array: Array({ default: [123, 1234] }),
   Dates: Time({ default: new Date() }),
@@ -57,3 +58,5 @@ export const Comments = Table("Comments", {
   UserID: Int().reference(Users, "ID", "Many"),
   Content: Json(),
 });
+
+type t1 = isFieldInsertOptional<typeof Users.Email>;

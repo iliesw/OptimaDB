@@ -428,6 +428,32 @@ type BaseFieldOptions<T = any> = {
   check?: (value: T) => boolean;
   autoIncrement?: boolean;
 };
+
+// Add new option(s) to BaseFieldOptions
+type ExtendFieldOptions<
+  Extra extends Record<string, any>,
+  T = any
+> = BaseFieldOptions<T> & Extra;
+
+// Set/override a specific option's type/value
+type WithOption<
+  Options extends BaseFieldOptions,
+  Key extends keyof Options,
+  Value
+> = Omit<Omit<Options, Key> & { [K in Key]: Value }, Key>;
+
+// Make certain options required
+type RequireOptions<
+  Options extends BaseFieldOptions,
+  Keys extends keyof Options
+> = Options & { [K in Keys]-?: Options[K] };
+
+// Make certain options forbidden
+type ExcludeOptions<
+  Options extends BaseFieldOptions,
+  Keys extends keyof Options
+> = Omit<Options, Keys>;
+
 export function Int<O extends BaseFieldOptions<number>>(options?: O) {
   return new OptimaField<number, { [K in keyof O]: O[K] }>(
     FieldTypes.Int,
@@ -435,13 +461,13 @@ export function Int<O extends BaseFieldOptions<number>>(options?: O) {
   );
 }
 
-export function Float<O extends BaseFieldOptions<number>>(options?: {
-  notNull?: boolean;
-  default?: any;
-  enum?: any[];
-  unique?: boolean;
-  check?: (value: number) => boolean;
-}) {
+export function Float<
+  O extends WithOption<
+    WithOption<BaseFieldOptions<number>, "autoIncrement", false>,
+    "primaryKey",
+    false
+  >
+>(options?: O) {
   const FloatOptions: BaseFieldOptions<number> = {
     autoIncrement: false,
     primaryKey: false,
@@ -457,11 +483,21 @@ export function Float<O extends BaseFieldOptions<number>>(options?: {
   );
 }
 
-export function Boolean<O extends BaseFieldOptions<boolean>>(options?: {
-  check?: (value: boolean) => boolean;
-  default?: boolean;
-  notNull?: boolean;
-}) {
+export function Boolean<
+  O extends WithOption<
+    WithOption<
+      WithOption<
+        WithOption<BaseFieldOptions<boolean>, "autoIncrement", false>,
+        "primaryKey",
+        false
+      >,
+      "unique",
+      false
+    >,
+    "enum",
+    [false, true]
+  >
+>(options?: O) {
   const BooleanOptions: BaseFieldOptions<boolean> = {
     autoIncrement: false,
     primaryKey: false,
@@ -477,14 +513,9 @@ export function Boolean<O extends BaseFieldOptions<boolean>>(options?: {
   );
 }
 
-export function Text<O extends BaseFieldOptions<string>>(options?: {
-  notNull?: boolean;
-  default?: any;
-  enum?: any[];
-  primaryKey?: boolean;
-  unique?: boolean;
-  check?: (value: string) => boolean;
-}) {
+export function Text<
+  O extends WithOption<BaseFieldOptions<string>, "autoIncrement", false>
+>(options?: O) {
   const TextOptions: BaseFieldOptions<string> = {
     autoIncrement: false,
     primaryKey: options?.primaryKey,
@@ -500,10 +531,25 @@ export function Text<O extends BaseFieldOptions<string>>(options?: {
   );
 }
 
-export function Password<O extends BaseFieldOptions<string>>(options?: {
-  notNull?: boolean;
-  check?: (value: string) => boolean;
-}) {
+export function Password<
+  O extends WithOption<
+    WithOption<
+      WithOption<
+        WithOption<
+          WithOption<BaseFieldOptions<string>, "autoIncrement", false>,
+          "primaryKey",
+          false
+        >,
+        "unique",
+        false
+      >,
+      "enum",
+      undefined
+    >,
+    "default",
+    undefined
+  >
+>(options?: O) {
   const PasswordOptions: BaseFieldOptions<string> = {
     autoIncrement: false,
     primaryKey: false,
@@ -519,14 +565,9 @@ export function Password<O extends BaseFieldOptions<string>>(options?: {
   );
 }
 
-export function Email<O extends BaseFieldOptions<string>>(options?: {
-  notNull?: boolean;
-  default?: any;
-  enum?: any[];
-  primaryKey?: boolean;
-  unique?: boolean;
-  check?: (value: string) => boolean;
-}) {
+export function Email<
+  O extends WithOption<BaseFieldOptions<string>, "autoIncrement", false>
+>(options?: O) {
   const EmailOptions: BaseFieldOptions<string> = {
     autoIncrement: false,
     primaryKey: options?.primaryKey,
@@ -542,13 +583,13 @@ export function Email<O extends BaseFieldOptions<string>>(options?: {
   );
 }
 
-export function Time<O extends BaseFieldOptions<Date>>(options?: {
-  notNull?: boolean;
-  default?: any;
-  enum?: any[];
-  unique?: boolean;
-  check?: (value: Date) => boolean;
-}) {
+export function Time<
+  O extends WithOption<
+    WithOption<BaseFieldOptions<Date>, "autoIncrement", false>,
+    "primaryKey",
+    false
+  >
+>(options?: O) {
   const DateTimeOptions: BaseFieldOptions<Date> = {
     autoIncrement: false,
     primaryKey: false,
@@ -564,14 +605,17 @@ export function Time<O extends BaseFieldOptions<Date>>(options?: {
   );
 }
 
-
-
-export function UUID<O extends BaseFieldOptions<string>>(options?: {
-  notNull?: boolean;
-  enum?: any[];
-  primaryKey?: boolean;
-  check?: (value: string) => boolean;
-}) {
+export function UUID<
+  O extends WithOption<
+    WithOption<
+      WithOption<BaseFieldOptions<string>, "autoIncrement", false>,
+      "unique",
+      true
+    >,
+    "default",
+    undefined
+  >
+>(options?: O) {
   const UUIDOptions: BaseFieldOptions<string> = {
     autoIncrement: false,
     primaryKey: options?.primaryKey,
@@ -587,15 +631,13 @@ export function UUID<O extends BaseFieldOptions<string>>(options?: {
   );
 }
 
-export function Array<O extends BaseFieldOptions<number[] | string[]>>(
-  options?: {
-    notNull?: boolean;
-    default?: any;
-    enum?: any[];
-    unique?: boolean;
-    check?: (value: number[] | string[]) => boolean;
-  }
-) {
+export function Array<
+  O extends WithOption<
+    WithOption<BaseFieldOptions<number[] | string[]>, "autoIncrement", false>,
+    "primaryKey",
+    false
+  >
+>(options?: O) {
   const ArrayOptions: BaseFieldOptions<number[] | string[]> = {
     autoIncrement: false,
     primaryKey: false,
@@ -611,15 +653,13 @@ export function Array<O extends BaseFieldOptions<number[] | string[]>>(
   );
 }
 
-export function Json<O extends BaseFieldOptions<Record<string, any>>>(
-  options?: {
-    notNull?: boolean;
-    default?: any;
-    enum?: any[];
-    unique?: boolean;
-    check?: (value: number[] | string[]) => boolean;
-  }
-) {
+export function Json<
+  O extends WithOption<
+    WithOption<BaseFieldOptions<number[] | string[]>, "autoIncrement", false>,
+    "primaryKey",
+    false
+  >
+>(options?: O) {
   const JsonOptions: BaseFieldOptions<Record<string, any>> = {
     autoIncrement: false,
     primaryKey: false,
