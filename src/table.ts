@@ -150,7 +150,24 @@ export class OptimaTB<
       ...extraParams
     );
     let cleanRows = rows.map((r: any) => mapOutRow(this, r));
-
+    if(where){
+      const WhereKeys = Object.keys(where)
+      let hasPasswordCond = false
+      let PasswordCols = []
+      WhereKeys.forEach(e=>{
+        if( this.Schema[e]["Type"] == "PASSWORD"){
+          hasPasswordCond = true
+          PasswordCols.push(e)
+        }
+      })
+      if(hasPasswordCond){
+        cleanRows = cleanRows.filter((e)=>{
+          return PasswordCols.every(col => 
+            Bun.password.verifySync(where[col] as string, e[col])
+          );
+        })
+      }
+    }
     if (options?.Extend != undefined) {
       const extendArray = Array.isArray(options.Extend)
         ? options.Extend
@@ -243,12 +260,12 @@ export class OptimaTB<
       const field = cols[key] as OptimaField<any, any, any>;
       const valueProvided = Object.prototype.hasOwnProperty.call(Values, key);
       const notNull = field["NotNull"];
-      if (field["Type"] == FieldTypes.UUID && field["Default"] == undefined){
+      if (field["Type"] == FieldTypes.UUID && field["Default"] == undefined && valueProvided == false){
         Values[key] = v4()
       }
-      // if(field["Type"] == FieldTypes.Password){
-      //   Values[key] = Bun.password.hashSync(Values[key],"bcrypt")
-      // }
+      if(field["Type"] == FieldTypes.Password){
+        Values[key] = Bun.password.hashSync(Values[key],"bcrypt")
+      }
       if (notNull) {
         if (!valueProvided) {
           throw new Error(
@@ -393,6 +410,20 @@ const buildWhereClause = (table: OptimaTB<any, any>, where?: any) => {
     return { clause: "", params: [] as any[] } as const;
   }
 
+  // Helper to check if a column is a password field
+  const isPasswordField = (column: string): boolean => {
+    const field = table["Schema"]?.[column];
+    if (!field) return false;
+    // Check for common password field names or explicit type
+    if (
+      column.toLowerCase().includes("password") ||
+      field["Type"] === "PASSWORD"
+    ) {
+      return true;
+    }
+    return false;
+  };
+
   const buildForObject = (
     obj: Record<string, any>
   ): { part: string; params: any[] } => {
@@ -437,6 +468,7 @@ const buildWhereClause = (table: OptimaTB<any, any>, where?: any) => {
       value: any,
       isJsonCol: boolean = false
     ) => {
+      if (isPasswordField(column)) return; // Exclude password fields
       if (isJsonCol) {
         parts.push(`json_extract("${column}", '$') ${operator} ?`);
         params.push(JSON.stringify(value));
@@ -452,6 +484,7 @@ const buildWhereClause = (table: OptimaTB<any, any>, where?: any) => {
       isJsonCol: boolean = false,
       negated: boolean = false
     ) => {
+      if (isPasswordField(column)) return; // Exclude password fields
       if (values.length === 0) {
         parts.push(negated ? "1 = 1" : "1 = 0");
         return;
@@ -474,6 +507,8 @@ const buildWhereClause = (table: OptimaTB<any, any>, where?: any) => {
     };
 
     const processColumnValue = (column: string, value: any) => {
+      if (isPasswordField(column)) return; // Exclude password fields
+
       const isJsonCol = isJsonOrArrayColumn(column);
 
       // Handle null
