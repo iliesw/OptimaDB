@@ -15,7 +15,11 @@ export const Users = Table("Users", {
   ID: uuid(),
   Email: email({}),
   Password: password({ notNull: true }),
-  isHuman: text({}),
+  isHuman: text({
+    check(value) {
+      return value.length > 10;
+    },
+  }),
   JSON: json({ default: { Field1: 123 } }),
   Array: array({ default: [123, 1234] }),
   Dates: time({ default: new Date() }),

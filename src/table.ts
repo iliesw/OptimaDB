@@ -150,22 +150,22 @@ export class OptimaTB<
       ...extraParams
     );
     let cleanRows = rows.map((r: any) => mapOutRow(this, r));
-    if(where){
-      const WhereKeys = Object.keys(where)
-      let hasPasswordCond = false
-      let PasswordCols = []
-      WhereKeys.forEach(e=>{
-        if( this.Schema[e]["Type"] == "PASSWORD"){
-          hasPasswordCond = true
-          PasswordCols.push(e)
+    if (where) {
+      const WhereKeys = Object.keys(where);
+      let hasPasswordCond = false;
+      let PasswordCols = [];
+      WhereKeys.forEach((e) => {
+        if (this.Schema[e]["Type"] == "PASSWORD") {
+          hasPasswordCond = true;
+          PasswordCols.push(e);
         }
-      })
-      if(hasPasswordCond){
-        cleanRows = cleanRows.filter((e)=>{
-          return PasswordCols.every(col => 
+      });
+      if (hasPasswordCond) {
+        cleanRows = cleanRows.filter((e) => {
+          return PasswordCols.every((col) =>
             Bun.password.verifySync(where[col] as string, e[col])
           );
-        })
+        });
       }
     }
     if (options?.Extend != undefined) {
@@ -216,7 +216,27 @@ export class OptimaTB<
       `SELECT * FROM "${this.Name}"${clause}`
     ).get(...params);
     let mappedRow = mapOutRow(this, row);
-
+    if (where) {
+      const WhereKeys = Object.keys(where);
+      let hasPasswordCond = false;
+      let PasswordCols = [];
+      WhereKeys.forEach((e) => {
+        if (this.Schema[e]["Type"] == "PASSWORD") {
+          hasPasswordCond = true;
+          PasswordCols.push(e);
+        }
+      });
+      if (hasPasswordCond) {
+        // Fix for single row (not array) password check
+        if (
+          !PasswordCols.every((col) =>
+            Bun.password.verifySync(where[col] as string, mappedRow[col])
+          )
+        ) {
+          mappedRow = undefined;
+        }
+      }
+    }
     if (!mappedRow) return mappedRow;
 
     if (options?.Extend != undefined) {
@@ -260,11 +280,15 @@ export class OptimaTB<
       const field = cols[key] as OptimaField<any, any, any>;
       const valueProvided = Object.prototype.hasOwnProperty.call(Values, key);
       const notNull = field["NotNull"];
-      if (field["Type"] == FieldTypes.UUID && field["Default"] == undefined && valueProvided == false){
-        Values[key] = v4()
+      if (
+        field["Type"] == FieldTypes.UUID &&
+        field["Default"] == undefined &&
+        valueProvided == false
+      ) {
+        Values[key] = v4();
       }
-      if(field["Type"] == FieldTypes.Password){
-        Values[key] = Bun.password.hashSync(Values[key],"bcrypt")
+      if (field["Type"] == FieldTypes.Password) {
+        Values[key] = Bun.password.hashSync(Values[key], "bcrypt");
       }
       if (notNull) {
         if (!valueProvided) {
@@ -289,12 +313,17 @@ export class OptimaTB<
     // TypeChecker
     for (const [key, val] of Object.entries(Values)) {
       const field = cols[key] as OptimaField<any, any, any>;
-      const fieldType = field["Type"]
-      const isValid = TypeChecker(val,fieldType)
-      if(!isValid){
-        throw new Error("`"+val+"` is not a valid "+fieldType)
+      const fieldType = field["Type"];
+      const isValid = TypeChecker(val, fieldType);
+      if (!isValid) {
+        throw new Error("`" + val + "` is not a valid " + fieldType);
       }
-
+      if (field["Check"] != undefined) {
+        const checkPass = field["Check"](val);
+        if (!checkPass) {
+          throw new Error("`" + val + "` failed to satisfy the check function in field " + key);
+        }
+      }
     }
 
     const columns = Object.keys(Values as unknown as Record<string, unknown>);
@@ -330,6 +359,8 @@ export class OptimaTB<
   };
 
   Update = (values: UpdateChanges<T>, where?: WhereInput<T>) => {
+    const cols = this.Schema;
+    
     // For updates, if a NOT NULL field is explicitly set to null, block it
     for (const key of Object.keys(values)) {
       const field = (this.Schema as any)[key] as OptimaField<any, any, any> & {
@@ -343,6 +374,33 @@ export class OptimaTB<
         );
       }
     }
+    
+    // Type checking and validation (same as Insert method)
+    for (const [key, val] of Object.entries(values)) {
+      const field = cols[key] as OptimaField<any, any, any>;
+      if (!field) continue; // Skip if field doesn't exist in schema
+      
+      // Handle password field hashing
+      if (field["Type"] == FieldTypes.Password && val !== null && val !== undefined) {
+        (values as any)[key] = Bun.password.hashSync(val, "bcrypt");
+      }
+      
+      // Type checking
+      const fieldType = field["Type"];
+      const isValid = TypeChecker(val, fieldType);
+      if (!isValid) {
+        throw new Error("`" + val + "` is not a valid " + fieldType);
+      }
+      
+      // Check function validation
+      if (field["Check"] != undefined) {
+        const checkPass = field["Check"](val);
+        if (!checkPass) {
+          throw new Error("`" + val + "` failed to satisfy the check function in field " + key);
+        }
+      }
+    }
+    
     const columns = Object.keys(values);
     if (columns.length === 0) return { changes: 0 } as any;
 
