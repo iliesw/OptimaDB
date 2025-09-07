@@ -265,7 +265,11 @@ export const TypeChecker = (value: any, FieldType: FieldTypes) => {
       return typeof value === "number" && Number.isInteger(value);
     }
     case FieldTypes.Float: {
-      return typeof value === "number" && !Number.isNaN(value) && !Number.isInteger(value);
+      return (
+        typeof value === "number" &&
+        !Number.isNaN(value) &&
+        !Number.isInteger(value)
+      );
     }
     case FieldTypes.DateTime: {
       return value instanceof Date && !isNaN(value.getTime());
@@ -277,7 +281,9 @@ export const TypeChecker = (value: any, FieldType: FieldTypes) => {
       return typeof value === "string";
     }
     case FieldTypes.Email: {
-      return typeof value === "string" && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
+      return (
+        typeof value === "string" && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value)
+      );
     }
     case FieldTypes.Password: {
       return typeof value === "string" && value.length > 0; // basic check, can be extended
@@ -300,13 +306,17 @@ export const TypeChecker = (value: any, FieldType: FieldTypes) => {
       }
     }
     case FieldTypes.UUID: {
-      return typeof value === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
+      return (
+        typeof value === "string" &&
+        /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+          value
+        )
+      );
     }
     default:
       return false;
   }
 };
-
 
 // --------------------
 // SQL Builders
@@ -473,9 +483,9 @@ type BaseFieldOptions<T = any> = {
 
 // Add new option(s) to BaseFieldOptions
 type ExtendFieldOptions<
-  Extra extends Record<string, any>,
-  T = any
-> = BaseFieldOptions<T> & Extra;
+  Options extends BaseFieldOptions,
+  Extra extends Record<string, any>
+> = Options & Extra;
 
 // Set/override a specific option's type/value
 type WithOption<
@@ -648,13 +658,9 @@ export function time<
 
 export function uuid<
   O extends WithOption<
-    WithOption<
-      WithOption<BaseFieldOptions<string>, "autoIncrement", false>,
-      "unique",
-      true
-    >,
-    "default",
-    undefined
+    WithOption<BaseFieldOptions<string>, "autoIncrement", false>,
+    "unique",
+    true
   >
 >(options?: O) {
   const UUIDOptions: BaseFieldOptions<string> = {
@@ -663,7 +669,7 @@ export function uuid<
     unique: true,
     enum: options?.enum,
     check: options?.check,
-    default: undefined,
+    default: options?.default,
     notNull: options?.notNull,
   };
   return new OptimaField<string, { [K in keyof O]: O[K] }>(

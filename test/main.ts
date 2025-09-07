@@ -5,14 +5,13 @@ const DB = new OptimaDB(Schema);
 
 DB.Tables.Users.Insert({
 Email:"ilies@gmail.com",
-Password:"123456"
+Password:"123456",
 });
-
 
 
 console.log(
   DB.Tables.Users.Get(
-    { Array: { $includes: 123 } },
+    { Password: "123456" },
     {
       Extend: "Profile",
     }

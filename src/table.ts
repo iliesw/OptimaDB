@@ -6,6 +6,7 @@ import {
   ExtendTables,
   FieldReferenceMany,
   FieldToSQL,
+  FieldTypes,
   GetType,
   InsertInput,
   isFieldInsertOptional,
@@ -18,6 +19,7 @@ import {
   WhereInput,
 } from "./schema";
 import { EventEmitter } from "events";
+import { v4 } from "uuid";
 
 export class OptimaTB<
   T extends OptimaTable<Record<string, any>>,
@@ -241,7 +243,12 @@ export class OptimaTB<
       const field = cols[key] as OptimaField<any, any, any>;
       const valueProvided = Object.prototype.hasOwnProperty.call(Values, key);
       const notNull = field["NotNull"];
-
+      if (field["Type"] == FieldTypes.UUID && field["Default"] == undefined){
+        Values[key] = v4()
+      }
+      // if(field["Type"] == FieldTypes.Password){
+      //   Values[key] = Bun.password.hashSync(Values[key],"bcrypt")
+      // }
       if (notNull) {
         if (!valueProvided) {
           throw new Error(
@@ -270,6 +277,7 @@ export class OptimaTB<
       if(!isValid){
         throw new Error("`"+val+"` is not a valid "+fieldType)
       }
+
     }
 
     const columns = Object.keys(Values as unknown as Record<string, unknown>);

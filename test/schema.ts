@@ -9,17 +9,12 @@ import {
   time,
   text,
   isFieldInsertOptional,
+  uuid,
 } from "../src";
-
 export const Users = Table("Users", {
-  ID: int({
-    check: (e) => {
-      return e > 0;
-    },
-    autoIncrement: true,
-  }),
+  ID: uuid(),
   Email: email({}),
-  Password: password({ notNull:true }),
+  Password: password({ notNull: true }),
   isHuman: text({}),
   JSON: json({ default: { Field1: 123 } }),
   Array: array({ default: [123, 1234] }),
