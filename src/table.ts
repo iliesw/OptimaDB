@@ -13,12 +13,11 @@ import {
   OptimaTable,
   TableReferencesTableByMany,
   TableToSQL,
+  TypeChecker,
   UpdateChanges,
   WhereInput,
 } from "./schema";
 import { EventEmitter } from "events";
-
-
 
 export class OptimaTB<
   T extends OptimaTable<Record<string, any>>,
@@ -263,6 +262,15 @@ export class OptimaTB<
         }
       }
     }
+    // TypeChecker
+    for (const [key, val] of Object.entries(Values)) {
+      const field = cols[key] as OptimaField<any, any, any>;
+      const fieldType = field["Type"]
+      const isValid = TypeChecker(val,fieldType)
+      if(!isValid){
+        throw new Error("`"+val+"` is not a valid "+fieldType)
+      }
+    }
 
     const columns = Object.keys(Values as unknown as Record<string, unknown>);
     const placeholders = columns.map(() => "?").join(", ");
@@ -318,10 +326,7 @@ export class OptimaTB<
     for (const col of columns) {
       const field = (this.Schema as any)[col];
       const raw = values[col];
-      const formatted =
-        field
-          ? applyFormatIn(field,raw)
-          : raw;
+      const formatted = field ? applyFormatIn(field, raw) : raw;
       setParts.push(`"${col}" = ?`);
       setParams.push(formatted);
     }
@@ -373,11 +378,16 @@ const mapOutRow = (table: OptimaTB<any, any>, row: any) => {
   return result;
 };
 const buildWhereClause = (table: OptimaTB<any, any>, where?: any) => {
-  if (!where || (typeof where === "object" && Object.keys(where).length === 0)) {
+  if (
+    !where ||
+    (typeof where === "object" && Object.keys(where).length === 0)
+  ) {
     return { clause: "", params: [] as any[] } as const;
   }
 
-  const buildForObject = (obj: Record<string, any>): { part: string; params: any[] } => {
+  const buildForObject = (
+    obj: Record<string, any>
+  ): { part: string; params: any[] } => {
     const parts: string[] = [];
     const params: any[] = [];
 
@@ -399,7 +409,11 @@ const buildWhereClause = (table: OptimaTB<any, any>, where?: any) => {
       // primitive (number/string/bool) -> leave as-is
       // if user passed a JSON literal string like '"foo"', normalize it
       if (typeof value === "string") {
-        if (value.length >= 2 && value[0] === '"' && value[value.length - 1] === '"') {
+        if (
+          value.length >= 2 &&
+          value[0] === '"' &&
+          value[value.length - 1] === '"'
+        ) {
           try {
             const p = JSON.parse(value);
             if (typeof p !== "object") return p;
@@ -409,7 +423,12 @@ const buildWhereClause = (table: OptimaTB<any, any>, where?: any) => {
       return value;
     };
 
-    const addCondition = (column: string, operator: string, value: any, isJsonCol: boolean = false) => {
+    const addCondition = (
+      column: string,
+      operator: string,
+      value: any,
+      isJsonCol: boolean = false
+    ) => {
       if (isJsonCol) {
         parts.push(`json_extract("${column}", '$') ${operator} ?`);
         params.push(JSON.stringify(value));
@@ -419,7 +438,12 @@ const buildWhereClause = (table: OptimaTB<any, any>, where?: any) => {
       }
     };
 
-    const addInCondition = (column: string, values: any[], isJsonCol: boolean = false, negated: boolean = false) => {
+    const addInCondition = (
+      column: string,
+      values: any[],
+      isJsonCol: boolean = false,
+      negated: boolean = false
+    ) => {
       if (values.length === 0) {
         parts.push(negated ? "1 = 1" : "1 = 0");
         return;
@@ -437,7 +461,7 @@ const buildWhereClause = (table: OptimaTB<any, any>, where?: any) => {
         params.push(...values.map(formatForJsonElement));
       } else {
         parts.push(`"${column}" ${operator} (${placeholders})`);
-        params.push(...values.map(v => ensureFormatted(column, v)));
+        params.push(...values.map((v) => ensureFormatted(column, v)));
       }
     };
 
@@ -476,7 +500,9 @@ const buildWhereClause = (table: OptimaTB<any, any>, where?: any) => {
 
       // Handle objects with operators
       if (typeof value === "object" && value !== null) {
-        const hasOperators = Object.keys(value).some(key => key.startsWith('$'));
+        const hasOperators = Object.keys(value).some((key) =>
+          key.startsWith("$")
+        );
         if (hasOperators) {
           for (const [op, opValue] of Object.entries(value)) {
             switch (op) {
@@ -512,15 +538,27 @@ const buildWhereClause = (table: OptimaTB<any, any>, where?: any) => {
                   params.push(JSON.stringify(a), JSON.stringify(b));
                 } else {
                   parts.push(`"${column}" BETWEEN ? AND ?`);
-                  params.push(ensureFormatted(column, a), ensureFormatted(column, b));
+                  params.push(
+                    ensureFormatted(column, a),
+                    ensureFormatted(column, b)
+                  );
                 }
                 break;
               }
               case "$in":
-                addInCondition(column, Array.isArray(opValue) ? opValue : [], isJsonCol);
+                addInCondition(
+                  column,
+                  Array.isArray(opValue) ? opValue : [],
+                  isJsonCol
+                );
                 break;
               case "$nin":
-                addInCondition(column, Array.isArray(opValue) ? opValue : [], isJsonCol, true);
+                addInCondition(
+                  column,
+                  Array.isArray(opValue) ? opValue : [],
+                  isJsonCol,
+                  true
+                );
                 break;
               case "$is":
                 if (opValue === null || opValue === "null") {
@@ -554,13 +592,15 @@ const buildWhereClause = (table: OptimaTB<any, any>, where?: any) => {
                   params.push(formatForJsonElement(opValue));
                 } else {
                   // For non-JSON columns, this doesn't make sense
-                  throw new Error(`$includes operator can only be used with JSON/Array columns, but "${column}" is not a JSON/Array column`);
+                  throw new Error(
+                    `$includes operator can only be used with JSON/Array columns, but "${column}" is not a JSON/Array column`
+                  );
                 }
                 break;
               default:
-                if (op.startsWith('$path:')) {
+                if (op.startsWith("$path:")) {
                   const jsonPath = op.substring(6);
-                  const path = jsonPath || '$';
+                  const path = jsonPath || "$";
                   parts.push(`json_extract("${column}", '${path}') = ?`);
                   params.push(JSON.stringify(opValue));
                 } else {
@@ -575,7 +615,9 @@ const buildWhereClause = (table: OptimaTB<any, any>, where?: any) => {
             parts.push(`json_extract("${column}", '$') = ?`);
             params.push(JSON.stringify(value));
           } else {
-            throw new Error(`Cannot compare object value with non-JSON column "${column}"`);
+            throw new Error(
+              `Cannot compare object value with non-JSON column "${column}"`
+            );
           }
         }
         return;
@@ -584,7 +626,7 @@ const buildWhereClause = (table: OptimaTB<any, any>, where?: any) => {
       // Primitive values – equality
       if (isJsonCol) {
         let jsonValue = value;
-        if (typeof value === 'string') {
+        if (typeof value === "string") {
           try {
             JSON.parse(value);
             jsonValue = value; // already JSON literal
@@ -638,8 +680,6 @@ const buildWhereClause = (table: OptimaTB<any, any>, where?: any) => {
   } as const;
 };
 
-
-
 const tableExists = (table: OptimaTB<any, any>): boolean => {
   const row = table["InternalDBReference"]
     .query("SELECT name FROM sqlite_master WHERE type='table' AND name = ?")
@@ -668,13 +708,11 @@ const getExistingColumns = (table: OptimaTB<any, any>) => {
   return rows;
 };
 const buildCreateSQLFor = (name: string, table: OptimaTB<any, any>): string => {
-  const colDefs = Object.entries(table["Schema"]).map(
-    ([colName, field]) => {
-      // Access the internal SQL builder the same way Table() does
-      const def = FieldToSQL(field as OptimaField<any,any,any>);
-      return `"${colName}" ${def}`;
-    }
-  );
+  const colDefs = Object.entries(table["Schema"]).map(([colName, field]) => {
+    // Access the internal SQL builder the same way Table() does
+    const def = FieldToSQL(field as OptimaField<any, any, any>);
+    return `"${colName}" ${def}`;
+  });
   return `CREATE TABLE "${name}" (\n  ${colDefs.join(",\n  ")}\n);`;
 };
 const defaultLiteralForField = (field: any): string => {

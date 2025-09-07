@@ -1,17 +1,14 @@
-import { OptimaDB, TableToSQL, Int, Email } from "../src";
+import { OptimaDB } from "../src";
 import * as Schema from "./schema";
 
 const DB = new OptimaDB(Schema);
 
 DB.Tables.Users.Insert({
-Email:"",
-Password:""
+Email:"ilies@gmail.com",
+Password:"123456"
 });
 
-// This should cause a TypeScript error because Email is required (notNull: true)
-// DB.Tables.Users.Insert({
-//   // Missing Email - should cause error
-// });
+
 
 console.log(
   DB.Tables.Users.Get(

@@ -1,62 +1,62 @@
 import {
   Table,
-  Int,
-  Email,
-  Array,
-  Password,
-  Json,
-  Float,
-  Time,
-  Text,
+  int,
+  email,
+  array,
+  password,
+  json,
+  float,
+  time,
+  text,
   isFieldInsertOptional,
 } from "../src";
 
 export const Users = Table("Users", {
-  ID: Int({
+  ID: int({
     check: (e) => {
       return e > 0;
     },
     autoIncrement: true,
   }),
-  Email: Email({}),
-  Password: Password({ notNull:true }),
-  isHuman: Text({}),
-  JSON: Json({ default: { Field1: 123 } }),
-  Array: Array({ default: [123, 1234] }),
-  Dates: Time({ default: new Date() }),
-  Salary: Float({ enum: [1.5, 1.7, 1.9] }),
+  Email: email({}),
+  Password: password({ notNull:true }),
+  isHuman: text({}),
+  JSON: json({ default: { Field1: 123 } }),
+  Array: array({ default: [123, 1234] }),
+  Dates: time({ default: new Date() }),
+  Salary: float({ enum: [1.5, 1.7, 1.9] }),
 });
 
 export const Profile = Table("Profile", {
-  ID: Int({
+  ID: int({
     default: 1,
     notNull: true,
   }),
-  UserID: Int().reference(Users, "ID", "Many"),
-  Likes: Int({
+  UserID: int().reference(Users, "ID", "Many"),
+  Likes: int({
     default: 0,
   }),
-  Bio: Json(),
-  Win: Array(),
+  Bio: json(),
+  Win: array(),
 });
 
 export const Posts = Table("Posts", {
-  ID: Int({
+  ID: int({
     default: 1,
     notNull: true,
   }),
-  UserID: Int().reference(Users, "ID", "Many"),
-  Content: Json(),
+  UserID: int().reference(Users, "ID", "Many"),
+  Content: json(),
 });
 
 export const Comments = Table("Comments", {
-  ID: Int({
+  ID: int({
     default: 1,
     notNull: true,
   }),
-  PostID: Int().reference(Posts, "ID", "Many"),
-  UserID: Int().reference(Users, "ID", "Many"),
-  Content: Json(),
+  PostID: int().reference(Posts, "ID", "Many"),
+  UserID: int().reference(Users, "ID", "Many"),
+  Content: json(),
 });
 
 type t1 = isFieldInsertOptional<typeof Users.Email>;

@@ -216,7 +216,6 @@ export class OptimaField<
       [FieldTypes.Email]: "TEXT",
       [FieldTypes.Text]: "TEXT",
       [FieldTypes.DateTime]: "TEXT",
-      [FieldTypes.Day]: "TEXT",
       [FieldTypes.Password]: "TEXT",
       [FieldTypes.UUID]: "TEXT",
       [FieldTypes.Int]: "INTEGER",
@@ -259,6 +258,55 @@ export function Table<
 >(name: string, cols: TColumns): TColumns & { __tableName: string } {
   return Object.assign({}, cols, { __tableName: name });
 }
+
+export const TypeChecker = (value: any, FieldType: FieldTypes) => {
+  switch (FieldType) {
+    case FieldTypes.Int: {
+      return typeof value === "number" && Number.isInteger(value);
+    }
+    case FieldTypes.Float: {
+      return typeof value === "number" && !Number.isNaN(value) && !Number.isInteger(value);
+    }
+    case FieldTypes.DateTime: {
+      return value instanceof Date && !isNaN(value.getTime());
+    }
+    case FieldTypes.Boolean: {
+      return typeof value === "boolean";
+    }
+    case FieldTypes.Text: {
+      return typeof value === "string";
+    }
+    case FieldTypes.Email: {
+      return typeof value === "string" && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
+    }
+    case FieldTypes.Password: {
+      return typeof value === "string" && value.length > 0; // basic check, can be extended
+    }
+    case FieldTypes.Array: {
+      return Array.isArray(value);
+    }
+    case FieldTypes.Json: {
+      try {
+        if (typeof value === "string") {
+          JSON.parse(value);
+          return true;
+        }
+        if (typeof value === "object" && value !== null) {
+          return true;
+        }
+        return false;
+      } catch {
+        return false;
+      }
+    }
+    case FieldTypes.UUID: {
+      return typeof value === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
+    }
+    default:
+      return false;
+  }
+};
+
 
 // --------------------
 // SQL Builders
@@ -348,10 +396,6 @@ export function applyFormatIn(field: OptimaField<any, any>, value: any): any {
       return typeof value === "string" ? value : JSON.stringify(value);
     case FieldTypes.DateTime:
       return value instanceof Date ? value.toISOString() : String(value);
-    case FieldTypes.Day:
-      if (value instanceof Date) return value.toISOString().slice(0, 10);
-      if (typeof value === "string") return value.slice(0, 10);
-      return String(value);
     default:
       return value;
   }
@@ -379,8 +423,7 @@ export function applyFormatOut(field: OptimaField<any, any>, value: any): any {
       return value;
     case FieldTypes.DateTime:
       return typeof value === "string" ? new Date(value) : value;
-    case FieldTypes.Day:
-      return typeof value === "string" ? value : String(value);
+
     default:
       return value;
   }
@@ -413,7 +456,6 @@ export enum FieldTypes {
   Password = "PASSWORD",
   Email = "EMAIL",
   DateTime = "DATETIME",
-  Day = "DATE",
   UUID = "UUID",
   Array = "ARRAY",
   Json = "JSON",
@@ -454,14 +496,13 @@ type ExcludeOptions<
   Keys extends keyof Options
 > = Omit<Options, Keys>;
 
-export function Int<O extends BaseFieldOptions<number>>(options?: O) {
+export function int<O extends BaseFieldOptions<number>>(options?: O) {
   return new OptimaField<number, { [K in keyof O]: O[K] }>(
     FieldTypes.Int,
     (options ?? {}) as { [K in keyof O]: O[K] }
   );
 }
-
-export function Float<
+export function float<
   O extends WithOption<
     WithOption<BaseFieldOptions<number>, "autoIncrement", false>,
     "primaryKey",
@@ -483,7 +524,7 @@ export function Float<
   );
 }
 
-export function Boolean<
+export function boolean<
   O extends WithOption<
     WithOption<
       WithOption<
@@ -513,7 +554,7 @@ export function Boolean<
   );
 }
 
-export function Text<
+export function text<
   O extends WithOption<BaseFieldOptions<string>, "autoIncrement", false>
 >(options?: O) {
   const TextOptions: BaseFieldOptions<string> = {
@@ -531,7 +572,7 @@ export function Text<
   );
 }
 
-export function Password<
+export function password<
   O extends WithOption<
     WithOption<
       WithOption<
@@ -565,7 +606,7 @@ export function Password<
   );
 }
 
-export function Email<
+export function email<
   O extends WithOption<BaseFieldOptions<string>, "autoIncrement", false>
 >(options?: O) {
   const EmailOptions: BaseFieldOptions<string> = {
@@ -583,7 +624,7 @@ export function Email<
   );
 }
 
-export function Time<
+export function time<
   O extends WithOption<
     WithOption<BaseFieldOptions<Date>, "autoIncrement", false>,
     "primaryKey",
@@ -605,7 +646,7 @@ export function Time<
   );
 }
 
-export function UUID<
+export function uuid<
   O extends WithOption<
     WithOption<
       WithOption<BaseFieldOptions<string>, "autoIncrement", false>,
@@ -631,7 +672,7 @@ export function UUID<
   );
 }
 
-export function Array<
+export function array<
   O extends WithOption<
     WithOption<BaseFieldOptions<number[] | string[]>, "autoIncrement", false>,
     "primaryKey",
@@ -653,7 +694,7 @@ export function Array<
   );
 }
 
-export function Json<
+export function json<
   O extends WithOption<
     WithOption<BaseFieldOptions<number[] | string[]>, "autoIncrement", false>,
     "primaryKey",
