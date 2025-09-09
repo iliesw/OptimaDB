@@ -1,4 +1,4 @@
-import { Database } from "bun:sqlite";
+import { Database } from "./db";
 import type { OptimaTable } from "./schema";
 import * as fs from "node:fs";
 import * as path from "node:path";
@@ -12,7 +12,7 @@ export type OptimaTablesFromSchema<S extends Record<string, OptimaTB<any,any>>> 
 
 export class OptimaDB<S extends Record<string, OptimaTable<any>>> {
   private Path: string = "";
-  private InternalDB: Database;
+  private InternalDB: typeof Database;
   public Tables: {
     [K in keyof S]: OptimaTB<S[K], S, K & string>;
   };

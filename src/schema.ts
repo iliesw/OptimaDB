@@ -259,7 +259,10 @@ export function Table<
   return Object.assign({}, cols, { __tableName: name });
 }
 
-export const TypeChecker = (value: any, FieldType: FieldTypes) => {
+export const TypeChecker = (
+  value: any,
+  FieldType: FieldTypes,
+) => {
   switch (FieldType) {
     case FieldTypes.Int: {
       return typeof value === "number" && Number.isInteger(value);
@@ -292,23 +295,21 @@ export const TypeChecker = (value: any, FieldType: FieldTypes) => {
       return Array.isArray(value);
     }
     case FieldTypes.Json: {
-      try {
-        if (typeof value === "string") {
-          JSON.parse(value);
-          return true;
-        }
-        if (typeof value === "object" && value !== null) {
-          return true;
-        }
-        return false;
-      } catch {
-        return false;
-      }
+      // Accept any object (including arrays), but not null, not Date, not primitive
+      return (
+        typeof value === "object" &&
+        value !== null &&
+        !(value instanceof Date) &&
+        !Array.isArray(value) // Only allow plain objects, not arrays
+      );
     }
     case FieldTypes.UUID: {
+      // Accept both UUID v4 and v7 (RFC 4122 and draft for v7)
+      // v4: xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx
+      // v7: xxxxxxxx-xxxx-7xxx-yxxx-xxxxxxxxxxxx
       return (
         typeof value === "string" &&
-        /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+        /^[0-9a-f]{8}-[0-9a-f]{4}-[47][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
           value
         )
       );
@@ -702,7 +703,7 @@ export function array<
 
 export function json<
   O extends WithOption<
-    WithOption<BaseFieldOptions<number[] | string[]>, "autoIncrement", false>,
+    WithOption<BaseFieldOptions<Record<string, any>>, "autoIncrement", false>,
     "primaryKey",
     false
   >
@@ -716,8 +717,9 @@ export function json<
     default: options?.default,
     notNull: options?.notNull,
   };
-  return new OptimaField<Record<string, any>, { [K in keyof O]: O[K] }>(
+  const f = new OptimaField<Record<string, any>, { [K in keyof O]: O[K] }>(
     FieldTypes.Json,
     (JsonOptions ?? {}) as { [K in keyof O]: O[K] }
   );
+  return f;
 }

@@ -6,7 +6,10 @@ const DB = new OptimaDB(Schema);
 DB.Tables.Users.Insert({
   Email: "ilies@gmail.com",
   Password: "1234567",
-  isHuman:"12345678901"
+  JSON:{
+    X:123,
+    Y:1234
+  }
 });
 
 console.log(DB.Tables.Users.GetOne({ Password: "1234567" }));

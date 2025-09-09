@@ -20,7 +20,9 @@ export const Users = Table("Users", {
       return value.length > 10;
     },
   }),
-  JSON: json({ default: { Field1: 123 } }),
+  JSON: json({
+    default: { X: 1, Y: 2 },
+  }),
   Array: array({ default: [123, 1234] }),
   Dates: time({ default: new Date() }),
   Salary: float({ enum: [1.5, 1.7, 1.9] }),
@@ -58,4 +60,3 @@ export const Comments = Table("Comments", {
   Content: json(),
 });
 
-type t1 = isFieldInsertOptional<typeof Users.Email>;

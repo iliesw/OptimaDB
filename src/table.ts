@@ -1,4 +1,4 @@
-import { Database } from "bun:sqlite";
+import { Database } from "./db";
 import { OptimaDB } from "./database";
 import {
   applyFormatIn,
@@ -9,17 +9,14 @@ import {
   FieldTypes,
   GetType,
   InsertInput,
-  isFieldInsertOptional,
   OptimaField,
   OptimaTable,
-  TableReferencesTableByMany,
   TableToSQL,
   TypeChecker,
   UpdateChanges,
   WhereInput,
 } from "./schema";
 import { EventEmitter } from "events";
-import { v4 } from "uuid";
 
 export class OptimaTB<
   T extends OptimaTable<Record<string, any>>,
@@ -27,7 +24,7 @@ export class OptimaTB<
   N extends string = string
 > {
   private Name: N;
-  private InternalDBReference: Database;
+  private InternalDBReference: typeof Database;
   private InternalOptimaDBReference: OptimaDB<S>;
   private isHybrid: boolean;
   private Schema: T;
@@ -72,7 +69,7 @@ export class OptimaTB<
   }
 
   constructor(
-    InternalDB: Database,
+    InternalDB: typeof Database,
     TableName: N,
     SchemaTable: T,
     TablesToCompute: S,
@@ -285,7 +282,7 @@ export class OptimaTB<
         field["Default"] == undefined &&
         valueProvided == false
       ) {
-        Values[key] = v4();
+        Values[key] = Bun.randomUUIDv7();
       }
       if (field["Type"] == FieldTypes.Password) {
         Values[key] = Bun.password.hashSync(Values[key], "bcrypt");
