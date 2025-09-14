@@ -3,13 +3,12 @@ import * as Schema from "./schema";
 
 const DB = new OptimaDB(Schema);
 
-DB.Tables.Users.Insert({
+const User = DB.Tables.Users.Insert({
   Email: "ilies@gmail.com",
   Password: "1234567",
-  JSON:{
-    X:123,
-    Y:1234
-  }
+  JSON: {
+    X: 123,
+    Y: 1234,
+  },
 });
-
-console.log(DB.Tables.Users.GetOne({ Password: "1234567" }));
+console.log(new Date("x").toString())

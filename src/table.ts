@@ -269,7 +269,7 @@ export class OptimaTB<
     return mappedRow as GetType<T, Ext, S>;
   };
 
-  Insert = (Values: InsertInput<T>) => {
+  Insert = (Values: InsertInput<T>): GetType<T, null, S> => {
     // Handle both new Table() format and direct schema format
     const cols = this.Schema;
     // Runtime validation: ensure all NOT NULL fields are present and non-null
@@ -284,8 +284,15 @@ export class OptimaTB<
       ) {
         Values[key] = Bun.randomUUIDv7();
       }
-      if (field["Type"] == FieldTypes.Password) {
+      if (field["Type"] == FieldTypes.Password && valueProvided) {
         Values[key] = Bun.password.hashSync(Values[key], "bcrypt");
+      }
+      if (
+        field["Type"] == FieldTypes.Password &&
+        !valueProvided &&
+        !field["NotNull"]
+      ) {
+        Values[key] = null;
       }
       if (notNull) {
         if (!valueProvided) {
@@ -312,13 +319,15 @@ export class OptimaTB<
       const field = cols[key] as OptimaField<any, any, any>;
       const fieldType = field["Type"];
       const isValid = TypeChecker(val, fieldType);
-      if (!isValid) {
+      if (!isValid && val) {
         throw new Error("`" + val + "` is not a valid " + fieldType);
       }
       if (field["Check"] != undefined) {
         const checkPass = field["Check"](val);
         if (!checkPass) {
-          throw new Error("`" + val + "` failed to satisfy the check function in field " + key);
+          throw new Error(
+            "`" + val + "` failed to satisfy the check function in field " + key
+          );
         }
       }
     }
@@ -327,7 +336,7 @@ export class OptimaTB<
     const placeholders = columns.map(() => "?").join(", ");
     const sql = `INSERT INTO "${this.Name}" (${columns
       .map((col) => `"${col}"`)
-      .join(", ")}) VALUES (${placeholders})`;
+      .join(", ")}) VALUES (${placeholders}) RETURNING *`;
     const stmt = this.InternalDBReference.prepare(sql);
 
     const formattedValues = columns.map((col) => {
@@ -338,26 +347,31 @@ export class OptimaTB<
       }
       return raw;
     });
-    const res = stmt.run(...formattedValues);
+    const res = stmt.get(...formattedValues);
 
     if (this.isHybrid && this.ChangeEvent) {
       this.ChangeEvent.emit("Change");
     }
 
-    return res;
+    return mapOutRow(this, res);
   };
 
-  InsertMany = (Values: InsertInput<T>[]) => {
+  InsertMany = (Values: InsertInput<T>[]): GetType<T, null, S>[] => {
+    const Res = [];
     this.InternalOptimaDBReference.Batch(() => {
       for (const row of Values) {
-        this.Insert(row);
+        Res.push(this.Insert(row));
       }
     });
+    return Res;
   };
 
-  Update = (values: UpdateChanges<T>, where?: WhereInput<T>) => {
+  Update = (
+    values: UpdateChanges<T>,
+    where?: WhereInput<T>
+  ): GetType<T, null, S>[] => {
     const cols = this.Schema;
-    
+
     // For updates, if a NOT NULL field is explicitly set to null, block it
     for (const key of Object.keys(values)) {
       const field = (this.Schema as any)[key] as OptimaField<any, any, any> & {
@@ -371,33 +385,39 @@ export class OptimaTB<
         );
       }
     }
-    
+
     // Type checking and validation (same as Insert method)
     for (const [key, val] of Object.entries(values)) {
       const field = cols[key] as OptimaField<any, any, any>;
       if (!field) continue; // Skip if field doesn't exist in schema
-      
+
       // Handle password field hashing
-      if (field["Type"] == FieldTypes.Password && val !== null && val !== undefined) {
+      if (
+        field["Type"] == FieldTypes.Password &&
+        val !== null &&
+        val !== undefined
+      ) {
         (values as any)[key] = Bun.password.hashSync(val, "bcrypt");
       }
-      
+
       // Type checking
       const fieldType = field["Type"];
       const isValid = TypeChecker(val, fieldType);
       if (!isValid) {
         throw new Error("`" + val + "` is not a valid " + fieldType);
       }
-      
+
       // Check function validation
       if (field["Check"] != undefined) {
         const checkPass = field["Check"](val);
         if (!checkPass) {
-          throw new Error("`" + val + "` failed to satisfy the check function in field " + key);
+          throw new Error(
+            "`" + val + "` failed to satisfy the check function in field " + key
+          );
         }
       }
     }
-    
+
     const columns = Object.keys(values);
     if (columns.length === 0) return { changes: 0 } as any;
 
@@ -414,24 +434,28 @@ export class OptimaTB<
     const whereBuilt = buildWhereClause(this, where as any);
     const sql = `UPDATE "${this.Name}" SET ${setParts.join(", ")}${
       whereBuilt.clause
-    }`;
+    } RETURNING *`;
     const stmt = this.InternalDBReference.prepare(sql);
-    const res = stmt.run(...setParams, ...whereBuilt.params);
+    const res = stmt.all(...setParams, ...whereBuilt.params);
     if (this.isHybrid) {
       this.ChangeEvent.emit("Change");
     }
-    return res;
+    return res.map((e: any) => {
+      return mapOutRow(this, e);
+    });
   };
 
   Delete = (where?: WhereInput<T>) => {
     const whereBuilt = buildWhereClause(this, where as any);
-    const sql = `DELETE FROM "${this.Name}"${whereBuilt.clause}`;
+    const sql = `DELETE FROM "${this.Name}"${whereBuilt.clause} RETURNING *`;
     const stmt = this.InternalDBReference.prepare(sql);
-    const res = stmt.run(...whereBuilt.params);
+    const res = stmt.all(...whereBuilt.params);
     if (this.isHybrid) {
       this.ChangeEvent.emit("Change");
     }
-    return res;
+    return res.map((e: any) => {
+      return mapOutRow(this, e);
+    });
   };
 
   Count = (where?: WhereInput<T>) => {

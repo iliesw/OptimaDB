@@ -259,10 +259,7 @@ export function Table<
   return Object.assign({}, cols, { __tableName: name });
 }
 
-export const TypeChecker = (
-  value: any,
-  FieldType: FieldTypes,
-) => {
+export const TypeChecker = (value: any, FieldType: FieldTypes) => {
   switch (FieldType) {
     case FieldTypes.Int: {
       return typeof value === "number" && Number.isInteger(value);
@@ -275,7 +272,7 @@ export const TypeChecker = (
       );
     }
     case FieldTypes.DateTime: {
-      return value instanceof Date && !isNaN(value.getTime());
+      return new Date(value).toString() !== "Invalid Date";
     }
     case FieldTypes.Boolean: {
       return typeof value === "boolean";

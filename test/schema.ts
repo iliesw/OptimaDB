@@ -11,9 +11,14 @@ import {
   isFieldInsertOptional,
   uuid,
 } from "../src";
+
+
+
 export const Users = Table("Users", {
   ID: uuid(),
-  Email: email({}),
+  Email: email({
+
+  }),
   Password: password({ notNull: true }),
   isHuman: text({
     check(value) {
@@ -28,12 +33,14 @@ export const Users = Table("Users", {
   Salary: float({ enum: [1.5, 1.7, 1.9] }),
 });
 
+
+
 export const Profile = Table("Profile", {
   ID: int({
     default: 1,
     notNull: true,
   }),
-  UserID: int().reference(Users, "ID", "Many"),
+  UserID: uuid().reference(Users, "ID", "Many"),
   Likes: int({
     default: 0,
   }),
