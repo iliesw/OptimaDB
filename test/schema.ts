@@ -8,9 +8,8 @@ import {
   float,
   time,
   text,
-  isFieldInsertOptional,
   uuid,
-} from "../src";
+} from "@inflector/db";
 
 
 
@@ -44,7 +43,11 @@ export const Profile = Table("Profile", {
   Likes: int({
     default: 0,
   }),
-  Bio: json(),
+  Bio: json({
+    check(value){
+      return value.Field123
+    }
+  }),
   Win: array(),
 });
 

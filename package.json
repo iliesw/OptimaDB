@@ -1,6 +1,6 @@
 {
   "name": "@inflector/db",
-  "version": "1.7.9",
+  "version": "1.7.11",
   "author": "Inflector",
   "main": "./dist/index.js",
   "module": "./dist/index.js",
@@ -10,16 +10,20 @@
   },
   "exports": {
     ".": {
-      "types": "./dist/index.d.ts",
-      "import": "./dist/index.js",
+      "bun": "./dist/index.js",
       "default": "./dist/index.js"
     },
     "./schema": {
-      "types": "./dist/schema.d.ts",
-      "import": "./dist/schema.js",
+      "bun": "./dist/schema.js",
       "default": "./dist/schema.js"
     },
     "./package.json": "./package.json"
+  },
+  "typesVersions": {
+    "*": {
+      ".": ["./dist/index.d.ts"],
+      "schema": ["./dist/schema.d.ts"]
+    }
   },
   "files": [
     "dist",
