@@ -655,16 +655,13 @@ export function time<
 }
 
 export function uuid<
-  O extends WithOption<
+  O extends 
     WithOption<BaseFieldOptions<string>, "autoIncrement", false>,
-    "unique",
-    true
-  >
 >(options?: O) {
   const UUIDOptions: BaseFieldOptions<string> = {
     autoIncrement: false,
     primaryKey: options?.primaryKey,
-    unique: true,
+    unique: options?.unique,
     enum: options?.enum,
     check: options?.check,
     default: options?.default,
@@ -678,12 +675,12 @@ export function uuid<
 
 export function array<
   O extends WithOption<
-    WithOption<BaseFieldOptions<number[] | string[]>, "autoIncrement", false>,
+    WithOption<BaseFieldOptions<any[]>, "autoIncrement", false>,
     "primaryKey",
     false
   >
 >(options?: O) {
-  const ArrayOptions: BaseFieldOptions<number[] | string[]> = {
+  const ArrayOptions: BaseFieldOptions<any[]> = {
     autoIncrement: false,
     primaryKey: false,
     unique: options?.unique,
@@ -692,7 +689,7 @@ export function array<
     default: options?.default,
     notNull: options?.notNull,
   };
-  return new OptimaField<number[] | string[], { [K in keyof O]: O[K] }>(
+  return new OptimaField<any[], { [K in keyof O]: O[K] }>(
     FieldTypes.Array,
     (ArrayOptions ?? {}) as { [K in keyof O]: O[K] }
   );
