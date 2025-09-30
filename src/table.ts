@@ -269,6 +269,116 @@ export class OptimaTB<
     return mappedRow as GetType<T, Ext, S>;
   };
 
+  Upsert = (Values: InsertInput<T>): GetType<T, null, S> => {
+    const cols = this.Schema;
+
+    // Runtime validation: ensure all NOT NULL fields are present and non-null
+    for (const key of Object.keys(cols)) {
+      const field = cols[key] as OptimaField<any, any, any>;
+      const valueProvided = Object.prototype.hasOwnProperty.call(Values, key);
+      const notNull = field["NotNull"];
+
+      if (
+        field["Type"] == FieldTypes.UUID &&
+        field["Default"] == undefined &&
+        valueProvided == false
+      ) {
+        Values[key] = Bun.randomUUIDv7();
+      }
+      if (field["Type"] == FieldTypes.Password && valueProvided) {
+        Values[key] = Bun.password.hashSync(Values[key], "bcrypt");
+      }
+      if (
+        field["Type"] == FieldTypes.Password &&
+        !valueProvided &&
+        !field["NotNull"]
+      ) {
+        Values[key] = null;
+      }
+      if (notNull) {
+        if (!valueProvided) {
+          throw new Error(
+            `Missing required field: ${String(key)} on insert into ${this.Name}`
+          );
+        }
+        if (
+          (Values as any)[key] === null ||
+          (Values as any)[key] === undefined
+        ) {
+          throw new Error(
+            `Field ${String(
+              key
+            )} is NOT NULL and must be provided with a non-null value in ${
+              this.Name
+            }`
+          );
+        }
+      }
+    }
+
+    // TypeChecker
+    for (const [key, val] of Object.entries(Values)) {
+      const field = cols[key] as OptimaField<any, any, any>;
+      const fieldType = field["Type"];
+      const isValid = TypeChecker(val, fieldType);
+      if (!isValid && val) {
+        throw new Error("`" + val + "` is not a valid " + fieldType);
+      }
+      if (field["Check"] != undefined) {
+        const checkPass = field["Check"](val);
+        if (!checkPass) {
+          throw new Error(
+            "`" + val + "` failed to satisfy the check function in field " + key
+          );
+        }
+      }
+    }
+
+    const columns = Object.keys(Values as unknown as Record<string, unknown>);
+    const placeholders = columns.map(() => "?").join(", ");
+
+    // pick conflict target (prefer primary key if defined, otherwise unique index)
+    const conflictCols = Object.keys(cols).filter(
+      (k) => (cols[k] as any)["PrimaryKey"] || (cols[k] as any)["Unique"]
+    );
+    if (conflictCols.length === 0) {
+      throw new Error(
+        `No PRIMARY KEY or UNIQUE constraint found in ${this.Name}, UPSERT not possible`
+      );
+    }
+
+    // generate DO UPDATE SET col = excluded.col for all updatable fields
+    const updateSet = columns
+      .filter((col) => !conflictCols.includes(col)) // don’t overwrite PK
+      .map((col) => `"${col}" = excluded."${col}"`)
+      .join(", ");
+
+    const sql = `
+      INSERT INTO "${this.Name}" (${columns.map((c) => `"${c}"`).join(", ")})
+      VALUES (${placeholders})
+      ON CONFLICT (${conflictCols.map((c) => `"${c}"`).join(", ")})
+      DO UPDATE SET ${updateSet}
+      RETURNING *;
+    `;
+
+    const stmt = this.InternalDBReference.prepare(sql);
+
+    const formattedValues = columns.map((col) => {
+      const field = cols[col];
+      const raw = (Values as any)[col];
+      if (field) {
+        return applyFormatIn(field, raw);
+      }
+      return raw;
+    });
+    const res = stmt.get(...formattedValues);
+
+    if (this.isHybrid && this.ChangeEvent) {
+      this.ChangeEvent.emit("Change");
+    }
+
+    return mapOutRow(this, res);
+  };
   Insert = (Values: InsertInput<T>): GetType<T, null, S> => {
     // Handle both new Table() format and direct schema format
     const cols = this.Schema;

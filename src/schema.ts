@@ -93,11 +93,7 @@ export type InsertInput<
   };
 
 export type isFieldInsertOptional<T> = T extends OptimaField<any, infer O, any>
-  ? O extends { primaryKey: true }
-    ? O extends { autoIncrement: true }
-      ? true // primary + autoincrement → optional
-      : false // primary without autoincrement → required
-    : O extends { notNull: infer N }
+  ? O extends { notNull: infer N }
     ? [N] extends [true]
       ? false // explicitly notNull: true → required
       : true
@@ -655,8 +651,7 @@ export function time<
 }
 
 export function uuid<
-  O extends 
-    WithOption<BaseFieldOptions<string>, "autoIncrement", false>,
+  O extends WithOption<BaseFieldOptions<string>, "autoIncrement", false>
 >(options?: O) {
   const UUIDOptions: BaseFieldOptions<string> = {
     autoIncrement: false,

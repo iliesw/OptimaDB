@@ -12,16 +12,17 @@ const User = DB.Tables.Users.Insert({
   },
 });
 
-DB.Tables.Profile.Insert({
-  ID:1,
-  Bio:{Field123:123},
-  UserID:User.ID
-})
+DB.Tables.Users.Upsert({
+  ID: User.ID,
+  Email: "ilies123@gmail.com",
+  Password: "1234567",
+  JSON: {
+    X: 1234,
+    Y: 1234,
+  },
+});
 console.log(
   DB.Tables.Users.GetOne({
-  Email:"ilies@gmail.com"
-},{
-  Extend:"Profile"
-})?.$Profile.at(0)?.Bio.Field123
-
-)
+    Password: "1234567",
+  })
+);
