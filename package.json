@@ -1,6 +1,6 @@
 {
   "name": "@inflector/db",
-  "version": "1.7.13",
+  "version": "1.8.0",
   "author": "Inflector",
   "main": "./dist/index.js",
   "module": "./dist/index.js",
