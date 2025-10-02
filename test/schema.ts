@@ -13,8 +13,8 @@ import {
 
 export const Users = Table("Users", {
   ID: uuid({ primaryKey: true }),
-  Email: email({}),
-  Password: password({ notNull: true }),
+  Email: email(),
+  Password: password(),
   isHuman: text({
     check(value) {
       return value.length > 10;
@@ -48,7 +48,6 @@ export const Profile = Table("Profile", {
 export const Posts = Table("Posts", {
   ID: int({
     default: 1,
-    notNull: true,
   }),
   UserID: int().reference(Users, "ID", "Many"),
   Content: json(),

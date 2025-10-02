@@ -1,6 +1,6 @@
 {
   "name": "@inflector/db",
-  "version": "1.8.0",
+  "version": "1.8.8",
   "author": "Inflector",
   "main": "./dist/index.js",
   "module": "./dist/index.js",
@@ -27,6 +27,7 @@
   },
   "files": [
     "dist",
+    "Extentions",
     "README.md",
     "LICENSE"
   ],

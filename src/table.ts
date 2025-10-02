@@ -1,8 +1,9 @@
-import { Database } from "./db";
+import { Database } from "bun:sqlite";
 import { OptimaDB } from "./database";
 import {
   applyFormatIn,
   applyFormatOut,
+  buildFormatter,
   ExtendTables,
   FieldReferenceMany,
   FieldToSQL,
@@ -17,6 +18,7 @@ import {
   WhereInput,
 } from "./schema";
 import { EventEmitter } from "events";
+import { BuildCond } from "./builder";
 
 export class OptimaTB<
   T extends OptimaTable<Record<string, any>>,
@@ -24,7 +26,7 @@ export class OptimaTB<
   N extends string = string
 > {
   private Name: N;
-  private InternalDBReference: typeof Database;
+  private InternalDBReference: Database;
   private InternalOptimaDBReference: OptimaDB<S>;
   private isHybrid: boolean;
   private Schema: T;
@@ -44,7 +46,53 @@ export class OptimaTB<
       Type: "One" | "Many";
     }
   > = new Map();
+  private InsertQCache = new Map();
+  private SelectQCache = new Map();
+  private compiledSchema: {
+    key: string;
+    type: FieldTypes;
+    notNull: boolean;
+    check?: (val: any) => boolean;
+    isPassword: boolean;
+    formatter: (val: any) => any;
+  }[] = [];
 
+  constructor(
+    InternalDB: Database,
+    TableName: N,
+    SchemaTable: T,
+    TablesToCompute: S,
+    OptimaDBRef: OptimaDB<S>,
+    isHybrid: boolean
+  ) {
+    this.InternalDBReference = InternalDB;
+    this.InternalOptimaDBReference = OptimaDBRef;
+    this.Schema = SchemaTable;
+    this.SchemaRef = TablesToCompute;
+    this.Name = TableName;
+    this.isHybrid = isHybrid;
+    this.InitTable(TablesToCompute);
+
+    if (isHybrid) {
+      this.ChangeEvent = new EventEmitter();
+      this.ChangeConfig.LastSave = Date.now();
+      this.ChangeEvent.on("Change", () => {
+        this.ChangeConfig.ChangeCounter++;
+        const Now = Date.now();
+        const LastSave = this.ChangeConfig.LastSave;
+        const Difference = Now - LastSave;
+
+        if (
+          Difference >= this.ChangeConfig.Timer ||
+          this.ChangeConfig.ChangeCounter >= this.ChangeConfig.Threshold
+        ) {
+          (this.InternalOptimaDBReference as any)["SaveToDisk"]();
+          this.ChangeConfig.ChangeCounter = 0;
+          this.ChangeConfig.LastSave = Date.now();
+        }
+      });
+    }
+  }
   private InitTable(Tables: S) {
     this.InternalDBReference.query(TableToSQL(this.Schema, this.Name)).run();
     for (const tableName of Object.keys(Tables)) {
@@ -66,44 +114,54 @@ export class OptimaTB<
         }
       }
     }
+    this.CompileInsertQuerries();
+    this.CompileSchema();
   }
+  private CompileSchema() {
+    this.compiledSchema = Object.entries(this.Schema).map(([key, field]) => ({
+      key,
+      type: field["Type"],
+      notNull: !!field["NotNull"],
+      check: field["Check"],
+      isPassword: field["Type"] === FieldTypes.Password,
+      formatter: buildFormatter(field["Type"]),
+    }));
+  }
+  private CompileInsertQuerries() {
+    const InsertQ = new Map();
+    const Keys = Object.keys(this.Schema);
 
-  constructor(
-    InternalDB: typeof Database,
-    TableName: N,
-    SchemaTable: T,
-    TablesToCompute: S,
-    OptimaDBRef: OptimaDB<S>,
-    isHybrid: boolean
-  ) {
-    this.InternalDBReference = InternalDB;
-    this.InternalOptimaDBReference = OptimaDBRef;
-    this.Schema = SchemaTable;
-    this.SchemaRef = TablesToCompute;
-    this.Name = TableName;
-    this.isHybrid = isHybrid;
-    this.InitTable(TablesToCompute);
-    if (isHybrid) {
-      this.ChangeEvent = new EventEmitter();
-      this.ChangeConfig.LastSave = Date.now();
-      this.ChangeEvent.on("Change", () => {
-        this.ChangeConfig.ChangeCounter++;
-        const Now = Date.now();
-        const LastSave = this.ChangeConfig.LastSave;
-        const Difference = Now - LastSave;
-
-        if (
-          Difference >= this.ChangeConfig.Timer ||
-          this.ChangeConfig.ChangeCounter >= this.ChangeConfig.Threshold
-        ) {
-          (this.InternalOptimaDBReference as any)["SaveToDisk"]();
-          this.ChangeConfig.ChangeCounter = 0;
-          this.ChangeConfig.LastSave = Date.now();
+    // Helper: generate all non-empty subsets
+    const subsets = (arr: string[]) => {
+      const result: string[][] = [];
+      const n = arr.length;
+      for (let mask = 1; mask < 1 << n; mask++) {
+        const subset: string[] = [];
+        for (let i = 0; i < n; i++) {
+          if (mask & (1 << i)) subset.push(arr[i]);
         }
-      });
-    }
-  }
+        result.push(subset);
+      }
+      return result;
+    };
 
+    const allCombos = subsets(Keys);
+
+    allCombos.forEach((cols) => {
+      const placeholders = cols.map(() => "?").join(", ");
+      const sql = `INSERT INTO "${this.Name}" (${cols
+        .map((c) => `"${c}"`)
+        .join(", ")}) VALUES (${placeholders})`;
+
+      const key = cols.sort().join(","); // Sort to ensure consistent key ordering
+      InsertQ.set(key, this.InternalDBReference.prepare(sql));
+      InsertQ.set(key + "-R", this.InternalDBReference.prepare(
+        sql + " Returning *"
+      ));
+    });
+
+    this.InsertQCache = InsertQ;
+  }
   Get = <Ext extends ExtendTables<T, S> | Array<ExtendTables<T, S>>>(
     where?: WhereInput<T>,
     options?: {
@@ -117,18 +175,17 @@ export class OptimaTB<
       };
     }
   ): GetType<T, Ext, S>[] => {
-    const { clause, params } = buildWhereClause(this, where as any);
-    const selectPrefix = options?.Unique ? "SELECT DISTINCT *" : "SELECT *";
-
+    let clause = "";
     let orderClause = "";
-    if (options?.OrderBy) {
-      const dir = options.OrderBy.Direction === "DESC" ? "DESC" : "ASC";
-      orderClause = ` ORDER BY "${options.OrderBy.Column}" ${dir}`;
-    }
-
     let limitClause = "";
     const extraParams: any[] = [];
-
+    const selectPrefix = options?.Unique ? "SELECT DISTINCT *" : "SELECT *";
+    if (where) {
+      clause = "WHERE " + BuildCond(where, this.Schema);
+    }
+    if (options?.OrderBy) {
+      orderClause = ` ORDER BY "${options.OrderBy.Column}" ${options.OrderBy.Direction}`;
+    }
     if (options?.Limit !== undefined) {
       limitClause += " LIMIT ?";
       extraParams.push(Number(options.Limit));
@@ -141,30 +198,15 @@ export class OptimaTB<
       extraParams.push(Number(options.Offset));
     }
 
-    const sql = `${selectPrefix} FROM "${this.Name}"${clause}${orderClause}${limitClause}`;
-    const rows = this.InternalDBReference.query(sql).all(
-      ...params,
-      ...extraParams
-    );
-    let cleanRows = rows.map((r: any) => mapOutRow(this, r));
-    if (where) {
-      const WhereKeys = Object.keys(where);
-      let hasPasswordCond = false;
-      let PasswordCols = [];
-      WhereKeys.forEach((e) => {
-        if (this.Schema[e]["Type"] == "PASSWORD") {
-          hasPasswordCond = true;
-          PasswordCols.push(e);
-        }
-      });
-      if (hasPasswordCond) {
-        cleanRows = cleanRows.filter((e) => {
-          return PasswordCols.every((col) =>
-            Bun.password.verifySync(where[col] as string, e[col])
-          );
-        });
-      }
+    const sql = `${selectPrefix} FROM "${this.Name}" ${clause} ${orderClause} ${limitClause}`;
+    let stmt = this.SelectQCache.get(sql);
+
+    if (!stmt) {
+      stmt = this.InternalDBReference.query(sql);
+      this.SelectQCache.set(sql, stmt);
     }
+    const rows = stmt.all(...extraParams);
+    let cleanRows = rows.map((r: any) => mapOutRow(this, r));
     if (options?.Extend != undefined) {
       const extendArray = Array.isArray(options.Extend)
         ? options.Extend
@@ -201,17 +243,22 @@ export class OptimaTB<
 
     return cleanRows as GetType<T, Ext, S>[];
   };
-
   GetOne = <Ext extends ExtendTables<T, S> | Array<ExtendTables<T, S>>>(
     where?: WhereInput<T>,
     options?: {
       Extend?: Ext;
     }
   ): GetType<T, Ext, S> | undefined => {
-    const { clause, params } = buildWhereClause(this, where as any);
-    const row = this.InternalDBReference.query(
-      `SELECT * FROM "${this.Name}"${clause}`
-    ).get(...params);
+    const clause = BuildCond(where != undefined ? where : {}, this.Schema);
+    const sql = `SELECT * FROM "${this.Name}"${clause}`;
+    const queryKey = sql + JSON.stringify(clause);
+    let stmt = this.SelectQCache.get(queryKey);
+
+    if (!stmt) {
+      stmt = this.InternalDBReference.query(sql);
+      this.SelectQCache.set(queryKey, stmt);
+    }
+    const row = stmt.get();
     let mappedRow = mapOutRow(this, row);
     if (where) {
       const WhereKeys = Object.keys(where);
@@ -268,7 +315,6 @@ export class OptimaTB<
 
     return mappedRow as GetType<T, Ext, S>;
   };
-
   Upsert = (Values: InsertInput<T>): GetType<T, null, S> => {
     const cols = this.Schema;
 
@@ -379,103 +425,75 @@ export class OptimaTB<
 
     return mapOutRow(this, res);
   };
-  Insert = (Values: InsertInput<T>): GetType<T, null, S> => {
-    // Handle both new Table() format and direct schema format
-    const cols = this.Schema;
-    // Runtime validation: ensure all NOT NULL fields are present and non-null
-    for (const key of Object.keys(cols)) {
-      const field = cols[key] as OptimaField<any, any, any>;
-      const valueProvided = Object.prototype.hasOwnProperty.call(Values, key);
-      const notNull = field["NotNull"];
-      if (
-        field["Type"] == FieldTypes.UUID &&
-        field["Default"] == undefined &&
-        valueProvided == false
-      ) {
-        Values[key] = Bun.randomUUIDv7();
-      }
-      if (field["Type"] == FieldTypes.Password && valueProvided) {
-        Values[key] = Bun.password.hashSync(Values[key], "bcrypt");
-      }
-      if (
-        field["Type"] == FieldTypes.Password &&
-        !valueProvided &&
-        !field["NotNull"]
-      ) {
-        Values[key] = null;
-      }
-      if (notNull) {
-        if (!valueProvided) {
+  Insert = (
+    Values: InsertInput<T>,
+    Returning?: boolean
+  ): GetType<T, null, S> => {
+    let formattedValues = [];
+    for (const f of this.compiledSchema) {
+      let val = Values[f.key];
+      const provided = Object.prototype.hasOwnProperty.call(Values, f.key);
+      if (f.notNull) {
+        if (!provided || val === null || val === undefined) {
           throw new Error(
-            `Missing required field: ${String(key)} on insert into ${this.Name}`
-          );
-        }
-        if (
-          (Values as any)[key] === null ||
-          (Values as any)[key] === undefined
-        ) {
-          throw new Error(
-            `Field ${String(
-              key
-            )} is NOT NULL and must be provided with a non-null value in ${
-              this.Name
-            }`
+            `Field "${f.key}" is NOT NULL and must be provided in ${this.Name}`
           );
         }
       }
+      if (this.Schema[f.key]["Type"] == FieldTypes.Password && provided) {
+        Values[f.key] = Bun.password.hashSync(Values[f.key], "bcrypt");
+      }
+      // Type & check validation
+      if (provided) {
+        if (!TypeChecker(val, f.type)) {
+          throw new Error(`"${val}" is not a valid ${f.type}`);
+        }
+        if (f.check && !f.check(val)) {
+          throw new Error(`"${val}" failed custom check in field "${f.key}"`);
+        }
+      }
+      formattedValues.push(applyFormatIn(this.Schema[f.key], val));
     }
-    // TypeChecker
-    for (const [key, val] of Object.entries(Values)) {
-      const field = cols[key] as OptimaField<any, any, any>;
-      const fieldType = field["Type"];
-      const isValid = TypeChecker(val, fieldType);
-      if (!isValid && val) {
-        throw new Error("`" + val + "` is not a valid " + fieldType);
-      }
-      if (field["Check"] != undefined) {
-        const checkPass = field["Check"](val);
-        if (!checkPass) {
-          throw new Error(
-            "`" + val + "` failed to satisfy the check function in field " + key
-          );
-        }
-      }
+    const cacheKey = Object.keys(Values).sort().join(",") + (Returning ? "-R" : "");
+    const stmt = this.InsertQCache.get(cacheKey);
+    
+    if (!stmt) {
+      throw new Error(`No prepared statement found for columns: ${Object.keys(Values).join(", ")}. This usually indicates a schema mismatch.`);
     }
-
-    const columns = Object.keys(Values as unknown as Record<string, unknown>);
-    const placeholders = columns.map(() => "?").join(", ");
-    const sql = `INSERT INTO "${this.Name}" (${columns
-      .map((col) => `"${col}"`)
-      .join(", ")}) VALUES (${placeholders}) RETURNING *`;
-    const stmt = this.InternalDBReference.prepare(sql);
-
-    const formattedValues = columns.map((col) => {
-      const field = cols[col];
-      const raw = (Values as any)[col];
-      if (field) {
-        return applyFormatIn(field, raw);
-      }
-      return raw;
-    });
-    const res = stmt.get(...formattedValues);
+    
+    const res =
+      Returning != undefined && Returning == true
+        ? stmt.get(
+            ...formattedValues.filter((e) => {
+              return e != undefined;
+            })
+          )
+        : stmt.run(
+            ...formattedValues.filter((e) => {
+              return e != undefined;
+            })
+          );
 
     if (this.isHybrid && this.ChangeEvent) {
       this.ChangeEvent.emit("Change");
     }
 
-    return mapOutRow(this, res);
+    return Returning != undefined && Returning == true
+      ? mapOutRow(this, res)
+      : res;
   };
-
-  InsertMany = (Values: InsertInput<T>[]): GetType<T, null, S>[] => {
+  InsertMany = (
+    Values: InsertInput<T>[],
+    Returning?: boolean
+  ): GetType<T, null, S>[] => {
     const Res = [];
     this.InternalOptimaDBReference.Batch(() => {
       for (const row of Values) {
-        Res.push(this.Insert(row));
+        Res.push(this.Insert(row, Returning));
       }
     });
     return Res;
   };
-
   Update = (
     values: UpdateChanges<T>,
     where?: WhereInput<T>
@@ -541,12 +559,12 @@ export class OptimaTB<
       setParams.push(formatted);
     }
 
-    const whereBuilt = buildWhereClause(this, where as any);
-    const sql = `UPDATE "${this.Name}" SET ${setParts.join(", ")}${
-      whereBuilt.clause
-    } RETURNING *`;
+    const whereBuilt = BuildCond(where != undefined ? where : {}, this.Schema);
+    const sql = `UPDATE "${this.Name}" SET ${setParts.join(
+      ", "
+    )}${whereBuilt} RETURNING *`;
     const stmt = this.InternalDBReference.prepare(sql);
-    const res = stmt.all(...setParams, ...whereBuilt.params);
+    const res = stmt.all(...setParams);
     if (this.isHybrid) {
       this.ChangeEvent.emit("Change");
     }
@@ -554,12 +572,11 @@ export class OptimaTB<
       return mapOutRow(this, e);
     });
   };
-
   Delete = (where?: WhereInput<T>) => {
-    const whereBuilt = buildWhereClause(this, where as any);
-    const sql = `DELETE FROM "${this.Name}"${whereBuilt.clause} RETURNING *`;
+    const whereBuilt = BuildCond(where != undefined ? where : {}, this.Schema);
+    const sql = `DELETE FROM "${this.Name}"${whereBuilt} RETURNING *`;
     const stmt = this.InternalDBReference.prepare(sql);
-    const res = stmt.all(...whereBuilt.params);
+    const res = stmt.all();
     if (this.isHybrid) {
       this.ChangeEvent.emit("Change");
     }
@@ -567,12 +584,11 @@ export class OptimaTB<
       return mapOutRow(this, e);
     });
   };
-
   Count = (where?: WhereInput<T>) => {
-    const { clause, params } = buildWhereClause(this, where as any);
+    const clause = BuildCond(where != undefined ? where : {}, this.Schema);
     const row = this.InternalDBReference.query(
       `SELECT COUNT(*) as count FROM "${this.Name}"${clause}`
-    ).get(...params) as { count: number };
+    ).get() as { count: number };
     return row ? row.count : 0;
   };
 }
@@ -582,483 +598,8 @@ const mapOutRow = (table: OptimaTB<any, any>, row: any) => {
   const result: Record<string, any> = {};
   const cols = (table["Schema"] as any).cols || table["Schema"];
   for (const key of Object.keys(row)) {
-    const field = cols[key];
-    if (field) {
-      result[key] = applyFormatOut(field, row[key]);
-    } else {
-      result[key] = row[key];
-    }
+    result[key] = applyFormatOut(cols[key]["Type"], row[key]);
   }
   return result;
 };
-const buildWhereClause = (table: OptimaTB<any, any>, where?: any) => {
-  if (
-    !where ||
-    (typeof where === "object" && Object.keys(where).length === 0)
-  ) {
-    return { clause: "", params: [] as any[] } as const;
-  }
 
-  // Helper to check if a column is a password field
-  const isPasswordField = (column: string): boolean => {
-    const field = table["Schema"]?.[column];
-    if (!field) return false;
-    // Check for common password field names or explicit type
-    if (
-      column.toLowerCase().includes("password") ||
-      field["Type"] === "PASSWORD"
-    ) {
-      return true;
-    }
-    return false;
-  };
-
-  const buildForObject = (
-    obj: Record<string, any>
-  ): { part: string; params: any[] } => {
-    const parts: string[] = [];
-    const params: any[] = [];
-
-    const cols = table["Schema"];
-    const isJsonOrArrayColumn = (column: string): boolean => {
-      const field = cols[column];
-      return field && (field["Type"] === "JSON" || field["Type"] === "ARRAY");
-    };
-
-    const ensureFormatted = (column: string, value: any) => {
-      const field = cols[column];
-      return field ? applyFormatIn(field, value) : value;
-    };
-
-    // NEW: for comparing individual JSON array elements (json_each.value)
-    const formatForJsonElement = (value: any) => {
-      if (value === null) return null;
-      if (typeof value === "object") return JSON.stringify(value); // objects/arrays -> JSON string
-      // primitive (number/string/bool) -> leave as-is
-      // if user passed a JSON literal string like '"foo"', normalize it
-      if (typeof value === "string") {
-        if (
-          value.length >= 2 &&
-          value[0] === '"' &&
-          value[value.length - 1] === '"'
-        ) {
-          try {
-            const p = JSON.parse(value);
-            if (typeof p !== "object") return p;
-          } catch {}
-        }
-      }
-      return value;
-    };
-
-    const addCondition = (
-      column: string,
-      operator: string,
-      value: any,
-      isJsonCol: boolean = false
-    ) => {
-      if (isPasswordField(column)) return; // Exclude password fields
-      if (isJsonCol) {
-        parts.push(`json_extract("${column}", '$') ${operator} ?`);
-        params.push(JSON.stringify(value));
-      } else {
-        parts.push(`"${column}" ${operator} ?`);
-        params.push(ensureFormatted(column, value));
-      }
-    };
-
-    const addInCondition = (
-      column: string,
-      values: any[],
-      isJsonCol: boolean = false,
-      negated: boolean = false
-    ) => {
-      if (isPasswordField(column)) return; // Exclude password fields
-      if (values.length === 0) {
-        parts.push(negated ? "1 = 1" : "1 = 0");
-        return;
-      }
-      const placeholders = values.map(() => "?").join(", ");
-      const operator = negated ? "NOT IN" : "IN";
-
-      if (isJsonCol) {
-        // IMPORTANT: compare against json_each.value (element-wise) instead of json_extract('$')
-        // so IN works on array contents. We need an EXISTS to scan the array.
-        parts.push(`EXISTS (
-          SELECT 1 FROM json_each("${column}")
-          WHERE json_each.value ${operator} (${placeholders})
-        )`);
-        params.push(...values.map(formatForJsonElement));
-      } else {
-        parts.push(`"${column}" ${operator} (${placeholders})`);
-        params.push(...values.map((v) => ensureFormatted(column, v)));
-      }
-    };
-
-    const processColumnValue = (column: string, value: any) => {
-      if (isPasswordField(column)) return; // Exclude password fields
-
-      const isJsonCol = isJsonOrArrayColumn(column);
-
-      // Handle null
-      if (value === null) {
-        parts.push(`"${column}" IS NULL`);
-        return;
-      }
-
-      // Handle arrays – automatic IN for scalars; JSON array → contains-any
-      if (Array.isArray(value)) {
-        if (isJsonCol) {
-          // contains-all semantics: require an EXISTS per element (AND them)
-          if (value.length === 0) {
-            // empty array => match everything (vacuously true)
-            parts.push("1 = 1");
-            return;
-          }
-          const existsClauses: string[] = [];
-          for (let i = 0; i < value.length; i++) {
-            existsClauses.push(`EXISTS (
-              SELECT 1 FROM json_each("${column}")
-              WHERE json_each.value = ?
-            )`);
-          }
-          parts.push(existsClauses.join(" AND "));
-          params.push(...value.map(formatForJsonElement));
-        } else {
-          addInCondition(column, value, isJsonCol);
-        }
-        return;
-      }
-
-      // Handle objects with operators
-      if (typeof value === "object" && value !== null) {
-        const hasOperators = Object.keys(value).some((key) =>
-          key.startsWith("$")
-        );
-        if (hasOperators) {
-          for (const [op, opValue] of Object.entries(value)) {
-            switch (op) {
-              case "$eq":
-                addCondition(column, "=", opValue, isJsonCol);
-                break;
-              case "$ne":
-                if (opValue === null) {
-                  parts.push(`"${column}" IS NOT NULL`);
-                } else {
-                  addCondition(column, "<>", opValue, isJsonCol);
-                }
-                break;
-              case "$gt":
-                addCondition(column, ">", opValue, isJsonCol);
-                break;
-              case "$gte":
-                addCondition(column, ">=", opValue, isJsonCol);
-                break;
-              case "$lt":
-                addCondition(column, "<", opValue, isJsonCol);
-                break;
-              case "$lte":
-                addCondition(column, "<=", opValue, isJsonCol);
-                break;
-              case "$like":
-                addCondition(column, "LIKE", opValue, isJsonCol);
-                break;
-              case "$between": {
-                const [a, b] = Array.isArray(opValue) ? opValue : [];
-                if (isJsonCol) {
-                  parts.push(`json_extract("${column}", '$') BETWEEN ? AND ?`);
-                  params.push(JSON.stringify(a), JSON.stringify(b));
-                } else {
-                  parts.push(`"${column}" BETWEEN ? AND ?`);
-                  params.push(
-                    ensureFormatted(column, a),
-                    ensureFormatted(column, b)
-                  );
-                }
-                break;
-              }
-              case "$in":
-                addInCondition(
-                  column,
-                  Array.isArray(opValue) ? opValue : [],
-                  isJsonCol
-                );
-                break;
-              case "$nin":
-                addInCondition(
-                  column,
-                  Array.isArray(opValue) ? opValue : [],
-                  isJsonCol,
-                  true
-                );
-                break;
-              case "$is":
-                if (opValue === null || opValue === "null") {
-                  parts.push(`"${column}" IS NULL`);
-                } else {
-                  parts.push(`"${column}" IS NOT NULL`);
-                }
-                break;
-              case "$not":
-                if (typeof opValue === "object" && !Array.isArray(opValue)) {
-                  const compiled = buildForObject({ [column]: opValue });
-                  if (compiled.part) {
-                    parts.push(`NOT (${compiled.part})`);
-                    params.push(...compiled.params);
-                  }
-                } else if (Array.isArray(opValue)) {
-                  addInCondition(column, opValue, isJsonCol, true);
-                } else if (opValue === null) {
-                  parts.push(`"${column}" IS NOT NULL`);
-                } else {
-                  addCondition(column, "<>", opValue, isJsonCol);
-                }
-                break;
-              case "$includes":
-                if (isJsonCol) {
-                  // For JSON/Array columns, check if the value exists in the array
-                  parts.push(`EXISTS (
-                    SELECT 1 FROM json_each("${column}")
-                    WHERE json_each.value = ?
-                  )`);
-                  params.push(formatForJsonElement(opValue));
-                } else {
-                  // For non-JSON columns, this doesn't make sense
-                  throw new Error(
-                    `$includes operator can only be used with JSON/Array columns, but "${column}" is not a JSON/Array column`
-                  );
-                }
-                break;
-              default:
-                if (op.startsWith("$path:")) {
-                  const jsonPath = op.substring(6);
-                  const path = jsonPath || "$";
-                  parts.push(`json_extract("${column}", '${path}') = ?`);
-                  params.push(JSON.stringify(opValue));
-                } else {
-                  addCondition(column, "=", opValue, isJsonCol);
-                }
-                break;
-            }
-          }
-        } else {
-          // Direct object comparison for JSON columns
-          if (isJsonCol) {
-            parts.push(`json_extract("${column}", '$') = ?`);
-            params.push(JSON.stringify(value));
-          } else {
-            throw new Error(
-              `Cannot compare object value with non-JSON column "${column}"`
-            );
-          }
-        }
-        return;
-      }
-
-      // Primitive values – equality
-      if (isJsonCol) {
-        let jsonValue = value;
-        if (typeof value === "string") {
-          try {
-            JSON.parse(value);
-            jsonValue = value; // already JSON literal
-          } catch {
-            jsonValue = JSON.stringify(value);
-          }
-        } else {
-          jsonValue = JSON.stringify(value);
-        }
-        parts.push(`json_extract("${column}", '$') = ?`);
-        params.push(jsonValue);
-      } else {
-        parts.push(`"${column}" = ?`);
-        params.push(ensureFormatted(column, value));
-      }
-    };
-
-    for (const [key, value] of Object.entries(obj)) {
-      if (key === "$or" || key === "$and") {
-        const joiner = key === "$or" ? "OR" : "AND";
-        const arr = Array.isArray(value) ? value : [value];
-        const subParts: string[] = [];
-        const subParams: any[] = [];
-
-        for (const sub of arr) {
-          const compiled = buildForObject(sub);
-          if (compiled.part) {
-            subParts.push(`(${compiled.part})`);
-            subParams.push(...compiled.params);
-          }
-        }
-
-        if (subParts.length > 0) {
-          parts.push(subParts.join(` ${joiner} `));
-          params.push(...subParams);
-        }
-      } else {
-        processColumnValue(key, value);
-      }
-    }
-
-    return { part: parts.join(" AND "), params };
-  };
-
-  const compiled = buildForObject(where as Record<string, any>);
-  if (!compiled.part) return { clause: "", params: [] } as const;
-
-  return {
-    clause: ` WHERE ${compiled.part}`,
-    params: compiled.params,
-  } as const;
-};
-
-const tableExists = (table: OptimaTB<any, any>): boolean => {
-  const row = table["InternalDBReference"]
-    .query("SELECT name FROM sqlite_master WHERE type='table' AND name = ?")
-    .get(table["Name"]) as { name?: string } | undefined;
-  return !!row && row.name === table["Name"];
-};
-const getExistingColumns = (table: OptimaTB<any, any>) => {
-  if (!tableExists(table))
-    return [] as Array<{
-      name: string;
-      type: string | null;
-      notnull: number;
-      dflt_value: any;
-      pk: number;
-    }>;
-  const rows = table["InternalDBReference"]
-    .query(`PRAGMA table_info("${table["Name"]}")`)
-    .all() as Array<{
-    cid: number;
-    name: string;
-    type: string | null;
-    notnull: number;
-    dflt_value: any;
-    pk: number;
-  }>;
-  return rows;
-};
-const buildCreateSQLFor = (name: string, table: OptimaTB<any, any>): string => {
-  const colDefs = Object.entries(table["Schema"]).map(([colName, field]) => {
-    // Access the internal SQL builder the same way Table() does
-    const def = FieldToSQL(field as OptimaField<any, any, any>);
-    return `"${colName}" ${def}`;
-  });
-  return `CREATE TABLE "${name}" (\n  ${colDefs.join(",\n  ")}\n);`;
-};
-const defaultLiteralForField = (field: any): string => {
-  try {
-    const hasDefault = field["Default"] != null;
-
-    if (!hasDefault) return "NULL";
-    const rawDefault = field["Default"];
-    const formatted = applyFormatIn(field, rawDefault);
-    if (formatted === null || formatted === undefined) return "NULL";
-    if (typeof formatted === "number") return String(formatted);
-    if (typeof formatted === "boolean") return formatted ? "1" : "0";
-    // Treat everything else as string
-    const asString = String(formatted);
-    const escaped = asString.replace(/'/g, "''");
-    return `'${escaped}'`;
-  } catch {
-    return "NULL";
-  }
-};
-export const MigrateSchema = (
-  table: OptimaTB<any, any>,
-  renameColumns?: Record<string, string>
-) => {
-  const existing = getExistingColumns(table);
-  const desiredColumns = Object.keys(table["Schema"]);
-
-  // If table doesn't exist yet, just create it using the normal initializer and return.
-  if (!tableExists(table)) {
-    table["InternalDBReference"].exec(buildCreateSQLFor(table["Name"], table));
-    return;
-  }
-
-  // Build rename maps in both directions for convenience
-  const oldToNew = new Map<string, string>();
-  const newToOld = new Map<string, string>();
-  if (renameColumns) {
-    for (const [oldName, newName] of Object.entries(renameColumns)) {
-      oldToNew.set(oldName, newName);
-      newToOld.set(newName, oldName);
-    }
-  }
-
-  const existingNames = new Set(existing.map((c) => c.name));
-
-  // Detect if a rebuild is necessary by comparing column sets (after considering renames)
-  const normalizedExistingNames = new Set(
-    Array.from(existingNames).map((n) => oldToNew.get(n) ?? n)
-  );
-  const desiredNameSet = new Set(desiredColumns);
-
-  let requiresRebuild = false;
-  // Check name-level differences
-  for (const n of desiredNameSet)
-    if (!normalizedExistingNames.has(n)) requiresRebuild = true;
-  for (const n of normalizedExistingNames)
-    if (!desiredNameSet.has(n)) requiresRebuild = true;
-
-  // If sets match, we could still differ on constraints/types; rebuild to be safe.
-  // To avoid unnecessary churn, you could diff types via PRAGMA table_info, but we prefer safety here.
-  // If you want to skip in that case, comment the next line.
-  // Keep rebuild on by default to ensure constraints are applied.
-  requiresRebuild = requiresRebuild || true;
-
-  if (!requiresRebuild) return;
-
-  const tempName = `__tmp__${table["Name"]}`;
-
-  table["InternalDBReference"].run("BEGIN");
-  try {
-    table["InternalDBReference"].run("PRAGMA foreign_keys = OFF");
-
-    // Create temp table with desired schema
-    const createSQL = buildCreateSQLFor(tempName, table);
-    table["InternalDBReference"].exec(createSQL);
-
-    // Build column copy mapping
-    const targetCols: string[] = [];
-    const selectExprs: string[] = [];
-    for (const newCol of desiredColumns) {
-      targetCols.push(`"${newCol}"`);
-      const mappedOld = newToOld.get(newCol) ?? newCol;
-      if (existingNames.has(mappedOld)) {
-        selectExprs.push(`"${mappedOld}"`);
-      } else {
-        const field = (table["Schema"] as any)[newCol];
-        const literal = defaultLiteralForField(field);
-        selectExprs.push(`${literal} AS "${newCol}"`);
-      }
-    }
-
-    if (existing.length > 0) {
-      const insertSQL = `INSERT INTO "${tempName}" (${targetCols.join(
-        ", "
-      )}) SELECT ${selectExprs.join(", ")} FROM "${table["Name"]}"`;
-      table["InternalDBReference"].exec(insertSQL);
-    }
-
-    // Replace old table
-    table["InternalDBReference"].exec(
-      `DROP TABLE IF EXISTS "${table["Name"]}"`
-    );
-    table["InternalDBReference"].exec(
-      `ALTER TABLE "${tempName}" RENAME TO "${table["Name"]}"`
-    );
-    table["InternalDBReference"].run("PRAGMA foreign_keys = ON");
-    table["InternalDBReference"].run("COMMIT");
-  } catch (e) {
-    try {
-      table["InternalDBReference"].run("ROLLBACK");
-    } catch {}
-    try {
-      table["InternalDBReference"].run("PRAGMA foreign_keys = ON");
-    } catch {}
-    throw e;
-  }
-};

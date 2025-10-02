@@ -35,6 +35,76 @@ export type GetType<
 export type OptimaFieldToTS<F extends OptimaField<any, any, any>> =
   F extends OptimaField<infer K, any, any> ? K : never;
 
+// Type-specific where operators based on field type
+export type WhereOperatorObject<T> = T extends number
+  ? {
+      $eq?: T;
+      $ne?: T | null;
+      $gt?: T;
+      $gte?: T;
+      $lt?: T;
+      $lte?: T;
+      $in?: T[];
+      $nin?: T[];
+      $is?: null | "null" | "not-null";
+      $not?: WhereOperatorObject<T> | T | T[] | null;
+    }
+  : T extends string
+  ? {
+      $eq?: T;
+      $ne?: T | null;
+      $like?: string;
+      $in?: T[];
+      $nin?: T[];
+      $is?: null | "null" | "not-null";
+      $not?: WhereOperatorObject<T> | T | T[] | null;
+    }
+  : T extends boolean
+  ? {
+      $eq?: T;
+      $ne?: T | null;
+      $is?: null | "null" | "not-null";
+      $not?: WhereOperatorObject<T> | T | null;
+    }
+  : T extends Date
+  ? {
+      $eq?: T;
+      $ne?: T | null;
+      $gt?: T;
+      $gte?: T;
+      $lt?: T;
+      $lte?: T;
+      $in?: T[];
+      $nin?: T[];
+      $is?: null | "null" | "not-null";
+      $not?: WhereOperatorObject<T> | T | T[] | null;
+    }
+  : T extends any[]
+  ? {
+      $eq?: T;
+      $ne?: T | null;
+      $in?: T[];
+      $nin?: T[];
+      $includes?: T extends (infer U)[] ? U : T;
+      $is?: null | "null" | "not-null";
+      $not?: WhereOperatorObject<T> | T | T[] | null;
+    }
+  : T extends Record<string, any>
+  ? {
+      $eq?: T;
+      $ne?: T | null;
+      $in?: T[];
+      $nin?: T[];
+      $is?: null | "null" | "not-null";
+      $not?: WhereOperatorObject<T> | T | T[] | null;
+    }
+  : {
+      $eq?: T;
+      $ne?: T | null;
+      $is?: null | "null" | "not-null";
+      $not?: WhereOperatorObject<T> | T | null;
+    };
+
 export type ColumnWhere<T> = T | null | T[] | WhereOperatorObject<T>;
 export type BasicWhere<TDef extends OptimaTable<Record<string, any>>> = {
   [K in keyof TDef as K extends "__tableName" ? never : K]?: ColumnWhere<
@@ -46,21 +116,6 @@ export type WhereInput<TDef extends OptimaTable<Record<string, any>>> =
       $or?: WhereInput<TDef>[];
       $and?: WhereInput<TDef>[];
     };
-export type WhereOperatorObject<T> = {
-  $eq?: T;
-  $ne?: T | null;
-  $gt?: T;
-  $gte?: T;
-  $lt?: T;
-  $lte?: T;
-  $like?: string;
-  $between?: [T, T];
-  $in?: T[];
-  $nin?: T[];
-  $is?: null | "null" | "not-null";
-  $not?: WhereOperatorObject<T> | T | T[] | null;
-  $includes?: T extends (infer U)[] ? U : T;
-};
 export type UpdateChanges<T extends OptimaTable<Record<string, any>>> =
   Partial<{
     [K in keyof T as K extends "__tableName" ? never : K]: OptimaFieldToTS<
@@ -207,20 +262,7 @@ export class OptimaField<
     this.Unique = options?.unique ?? null;
     this.Check = options?.check ?? null;
     this.AutoIncrement = options?.autoIncrement ?? null;
-
-    const OptimaToSQLMAP: Record<FieldTypes, string> = {
-      [FieldTypes.Email]: "TEXT",
-      [FieldTypes.Text]: "TEXT",
-      [FieldTypes.DateTime]: "TEXT",
-      [FieldTypes.Password]: "TEXT",
-      [FieldTypes.UUID]: "TEXT",
-      [FieldTypes.Int]: "INTEGER",
-      [FieldTypes.Boolean]: "INTEGER",
-      [FieldTypes.Float]: "REAL",
-      [FieldTypes.Json]: "TEXT",
-      [FieldTypes.Array]: "TEXT",
-    };
-    this.SQLType = OptimaToSQLMAP[this.Type];
+    this.SQLType = this.Type;
   }
 
   reference<
@@ -312,10 +354,6 @@ export const TypeChecker = (value: any, FieldType: FieldTypes) => {
   }
 };
 
-// --------------------
-// SQL Builders
-// --------------------
-// ---------- Make FieldToSQL robust to either typed table or string ----------
 export const FieldToSQL = (field: OptimaField<any, any, any>): string => {
   const parts: string[] = [field["SQLType"]];
   if (field["PrimaryKey"]) parts.push("PRIMARY KEY");
@@ -324,33 +362,43 @@ export const FieldToSQL = (field: OptimaField<any, any, any>): string => {
   }
   if (field["NotNull"]) parts.push("NOT NULL");
   if (field["Unique"]) parts.push("UNIQUE");
-  if (field["Default"] !== null && field["Default"] !== undefined) {
-    let defVal: string;
-
-    // Handle JSON and Array types specially for default values
-    if (
-      field["Type"] === FieldTypes.Json ||
-      field["Type"] === FieldTypes.Array
-    ) {
-      // For JSON/Array fields, serialize the default value as JSON
+  let defVal: string;
+  switch (field["Type"]) {
+    case FieldTypes.Array: {
       defVal = `'${JSON.stringify(field["Default"]).replace(/'/g, "''")}'`;
-    } else if (
-      field["Type"] === FieldTypes.DateTime &&
-      field["Default"] instanceof Date
-    ) {
-      // For DateTime fields, format as ISO string
-      defVal = `'${field["Default"].toISOString().replace(/'/g, "''")}'`;
-    } else if (typeof field["Default"] === "string") {
-      // For string fields, escape single quotes
-      defVal = `'${field["Default"].replace(/'/g, "''")}'`;
-    } else {
-      // For other types, convert to string
-      defVal = String(field["Default"]);
+      break;
     }
-
+    case FieldTypes.Json: {
+      defVal = `'${JSON.stringify(field["Default"]).replace(/'/g, "''")}'`;
+      break;
+    }
+    case FieldTypes.DateTime: {
+      if(field["Default"] != null){
+        if(field["Default"] instanceof Date){
+          defVal = `CURRENT_TIMESTAMP`;
+        }else{
+          defVal = `'${field["Default"]}'`;
+        }
+        //
+        break;
+      }
+    }
+    case FieldTypes.UUID:{
+      defVal = `(uuid7())`;
+      break;
+    }
+    default:{
+      if(field["Default"]!=null && typeof field["Default"]=="string"){
+        defVal = `'${field["Default"].replace(/'/g, "''")}'`;
+      }else{
+        defVal = String(field["Default"]);
+      }
+    }
+  }
+  if(defVal!="null"){
     parts.push(`DEFAULT ${defVal}`);
   }
-
+  
   const ref = field["Reference"] as
     | {
         Table: OptimaTable<any> | string;
@@ -389,15 +437,11 @@ export function applyFormatIn(field: OptimaField<any, any>, value: any): any {
   if (value === null) return null;
 
   switch (field["Type"]) {
-    case FieldTypes.Boolean:
-      return value ? 1 : 0;
-    case FieldTypes.Int:
-      return typeof value === "number" ? Math.trunc(value) : Number(value);
-    case FieldTypes.Float:
-      return typeof value === "number" ? value : Number(value);
     case FieldTypes.Json:
     case FieldTypes.Array:
       return typeof value === "string" ? value : JSON.stringify(value);
+    case FieldTypes.Boolean:
+      return value ? 1 : 0;
     case FieldTypes.DateTime:
       return value instanceof Date ? value.toISOString() : String(value);
     default:
@@ -405,29 +449,31 @@ export function applyFormatIn(field: OptimaField<any, any>, value: any): any {
   }
 }
 
-export function applyFormatOut(field: OptimaField<any, any>, value: any): any {
-  if (value === undefined) return undefined;
-  if (value === null) return null;
-
-  switch (field["Type"]) {
+type Formatter = (value: any) => any;
+export function buildFormatter(type: FieldTypes): Formatter {
+  switch (type) {
     case FieldTypes.Boolean:
-      return value === 1 || value === true;
-    case FieldTypes.Int:
-    case FieldTypes.Float:
-      return typeof value === "number" ? value : Number(value);
+      return (v) => (v == null ? v : (v ? 1 : 0));
     case FieldTypes.Json:
     case FieldTypes.Array:
-      if (typeof value === "string") {
-        try {
-          return JSON.parse(value);
-        } catch {
-          return value;
-        }
-      }
-      return value;
+      return (v) => (v == null ? v : (typeof v === "string" ? v : JSON.stringify(v)));
     case FieldTypes.DateTime:
-      return typeof value === "string" ? new Date(value) : value;
+      return (v) => (v == null ? v : (v instanceof Date ? v.toISOString() : String(v)));
 
+    default:
+      return (v) => v;
+  }
+}
+
+export function applyFormatOut(field: string, value: any): any {
+  switch (field) {
+    case "BOOLEAN":
+      return value === 1;
+    case "JSON":
+    case "ARRAY":
+      return JSON.parse(value);
+    case "DATE":
+      return typeof value === "string" ? new Date(value) : value;
     default:
       return value;
   }
@@ -459,7 +505,7 @@ export enum FieldTypes {
   Text = "TEXT",
   Password = "PASSWORD",
   Email = "EMAIL",
-  DateTime = "DATETIME",
+  DateTime = "DATE",
   UUID = "UUID",
   Array = "ARRAY",
   Json = "JSON",
