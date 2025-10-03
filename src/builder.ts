@@ -9,7 +9,7 @@ const BuildCondField = <T extends DataTypes>(
   op: WhereOpFor<T>,
   val: any
 ) => {
-  const field =FieldName
+  const field = `\`${FieldName}\``
   switch (Type) {
     case DataTypes.Float:
     case DataTypes.Int: {

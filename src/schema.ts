@@ -380,8 +380,8 @@ export const FieldToSQL = (field: OptimaField<any, any, any>): string => {
           defVal = `'${field["Default"]}'`;
         }
         //
-        break;
       }
+      break;
     }
     case FieldTypes.UUID:{
       defVal = `(uuid7())`;

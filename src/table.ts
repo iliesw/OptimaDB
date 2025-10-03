@@ -155,9 +155,10 @@ export class OptimaTB<
 
       const key = cols.sort().join(","); // Sort to ensure consistent key ordering
       InsertQ.set(key, this.InternalDBReference.prepare(sql));
-      InsertQ.set(key + "-R", this.InternalDBReference.prepare(
-        sql + " Returning *"
-      ));
+      InsertQ.set(
+        key + "-R",
+        this.InternalDBReference.prepare(sql + " Returning *")
+      );
     });
 
     this.InsertQCache = InsertQ;
@@ -181,7 +182,8 @@ export class OptimaTB<
     const extraParams: any[] = [];
     const selectPrefix = options?.Unique ? "SELECT DISTINCT *" : "SELECT *";
     if (where) {
-      clause = "WHERE " + BuildCond(where, this.Schema);
+      const tempClause = BuildCond(where, this.Schema);
+      clause = tempClause == "" ? "" : "WHERE " + tempClause;
     }
     if (options?.OrderBy) {
       orderClause = ` ORDER BY "${options.OrderBy.Column}" ${options.OrderBy.Direction}`;
@@ -206,7 +208,7 @@ export class OptimaTB<
       this.SelectQCache.set(sql, stmt);
     }
     const rows = stmt.all(...extraParams);
-    let cleanRows = rows.map((r: any) => mapOutRow(this, r));
+    let cleanRows = rows.map((r: any) => this.mapOutRow(r));
     if (options?.Extend != undefined) {
       const extendArray = Array.isArray(options.Extend)
         ? options.Extend
@@ -250,38 +252,17 @@ export class OptimaTB<
     }
   ): GetType<T, Ext, S> | undefined => {
     const clause = BuildCond(where != undefined ? where : {}, this.Schema);
-    const sql = `SELECT * FROM "${this.Name}"${clause}`;
-    const queryKey = sql + JSON.stringify(clause);
-    let stmt = this.SelectQCache.get(queryKey);
+    const sql = `SELECT * FROM "${this.Name}" ${
+      clause == "" ? "" : " WHERE " + clause
+    } LIMIT 1`;
+    let stmt = this.SelectQCache.get(sql);
 
     if (!stmt) {
       stmt = this.InternalDBReference.query(sql);
-      this.SelectQCache.set(queryKey, stmt);
+      this.SelectQCache.set(sql, stmt);
     }
     const row = stmt.get();
-    let mappedRow = mapOutRow(this, row);
-    if (where) {
-      const WhereKeys = Object.keys(where);
-      let hasPasswordCond = false;
-      let PasswordCols = [];
-      WhereKeys.forEach((e) => {
-        if (this.Schema[e]["Type"] == "PASSWORD") {
-          hasPasswordCond = true;
-          PasswordCols.push(e);
-        }
-      });
-      if (hasPasswordCond) {
-        // Fix for single row (not array) password check
-        if (
-          !PasswordCols.every((col) =>
-            Bun.password.verifySync(where[col] as string, mappedRow[col])
-          )
-        ) {
-          mappedRow = undefined;
-        }
-      }
-    }
-    if (!mappedRow) return mappedRow;
+    let mappedRow = this.mapOutRow(row);
 
     if (options?.Extend != undefined) {
       const extendArray = Array.isArray(options.Extend)
@@ -423,7 +404,7 @@ export class OptimaTB<
       this.ChangeEvent.emit("Change");
     }
 
-    return mapOutRow(this, res);
+    return this.mapOutRow(res);
   };
   Insert = (
     Values: InsertInput<T>,
@@ -454,13 +435,18 @@ export class OptimaTB<
       }
       formattedValues.push(applyFormatIn(this.Schema[f.key], val));
     }
-    const cacheKey = Object.keys(Values).sort().join(",") + (Returning ? "-R" : "");
+    const cacheKey =
+      Object.keys(Values).sort().join(",") + (Returning ? "-R" : "");
     const stmt = this.InsertQCache.get(cacheKey);
-    
+
     if (!stmt) {
-      throw new Error(`No prepared statement found for columns: ${Object.keys(Values).join(", ")}. This usually indicates a schema mismatch.`);
+      throw new Error(
+        `No prepared statement found for columns: ${Object.keys(Values).join(
+          ", "
+        )}. This usually indicates a schema mismatch.`
+      );
     }
-    
+
     const res =
       Returning != undefined && Returning == true
         ? stmt.get(
@@ -479,7 +465,7 @@ export class OptimaTB<
     }
 
     return Returning != undefined && Returning == true
-      ? mapOutRow(this, res)
+      ? this.mapOutRow(res)
       : res;
   };
   InsertMany = (
@@ -569,7 +555,7 @@ export class OptimaTB<
       this.ChangeEvent.emit("Change");
     }
     return res.map((e: any) => {
-      return mapOutRow(this, e);
+      return this.mapOutRow(e);
     });
   };
   Delete = (where?: WhereInput<T>) => {
@@ -581,7 +567,7 @@ export class OptimaTB<
       this.ChangeEvent.emit("Change");
     }
     return res.map((e: any) => {
-      return mapOutRow(this, e);
+      return this.mapOutRow(e);
     });
   };
   Count = (where?: WhereInput<T>) => {
@@ -591,15 +577,13 @@ export class OptimaTB<
     ).get() as { count: number };
     return row ? row.count : 0;
   };
+  private mapOutRow = (row: any) => {
+    if (!row) return row;
+    const result: Record<string, any> = {};
+    const cols = this.Schema;
+    for (const key of Object.keys(row)) {
+      result[key] = applyFormatOut(cols[key]["Type"], row[key]);
+    }
+    return result;
+  };
 }
-
-const mapOutRow = (table: OptimaTB<any, any>, row: any) => {
-  if (!row) return row;
-  const result: Record<string, any> = {};
-  const cols = (table["Schema"] as any).cols || table["Schema"];
-  for (const key of Object.keys(row)) {
-    result[key] = applyFormatOut(cols[key]["Type"], row[key]);
-  }
-  return result;
-};
-
