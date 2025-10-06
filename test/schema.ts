@@ -9,7 +9,7 @@ import {
   time,
   text,
   uuid,
-} from "@inflector/db";
+} from "./../src";
 
 export const Users = Table("Users", {
   ID: uuid({ primaryKey: true }),
@@ -50,7 +50,7 @@ export const Posts = Table("Posts", {
     default: 1,
   }),
   UserID: int().reference(Users, "ID", "Many"),
-  Content: json(),
+  Content: time(),
 });
 
 export const Comments = Table("Comments", {
@@ -62,3 +62,9 @@ export const Comments = Table("Comments", {
   UserID: int().reference(Users, "ID", "Many"),
   Content: json(),
 });
+
+export const KV = Table('KV',{
+  Key:uuid({primaryKey:true}),
+  Value:text(),
+  Time:time({default:new Date()})
+})

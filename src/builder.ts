@@ -83,26 +83,30 @@ const BuildCondField = <T extends DataTypes>(
       return `${field} ${T[op]} ${escapeStr(val)}`;
     }
     case DataTypes.Date: {
+      const normalizeDate = (v: Date) => {
+        return v.toISOString().split(".")[0] + "Z"; // remove milliseconds
+      };
+    
       switch (op) {
         case "$eq":
-          return `time_equal(${field}, time_parse("${val}"))`;
+          return `${field} = '${normalizeDate(val)}'`;
         case "$ne":
-          return `NOT time_equal(${field}, time_parse("${val}"))`;
+          return `${field} != '${normalizeDate(val)}'`;
         case "$before":
-          return `time_before(${field}, time_parse("${val}"))`;
+          return `${field} < '${normalizeDate(val)}'`;
         case "$ebefore":
-          return `time_compare(${field}, time_parse("${val}")) <= 0`;
+          return `${field} <= '${normalizeDate(val)}'`;
         case "$after":
-          return `time_after(${field}, time_parse("${val}"))`;
+          return `${field} > '${normalizeDate(val)}'`;
         case "$eafter":
-          return `time_compare(${field}, time_parse("${val}")) >= 0`;
+          return `${field} >= '${normalizeDate(val)}'`;
         case "$between":
           if (!Array.isArray(val) || val.length !== 2) {
-            throw new Error(
-              `$between operator requires an array of two values`
-            );
+            throw new Error(`$between operator requires an array of two values`);
           }
-          return `(time_after(${field}, time_parse("${val[0]}")) AND time_before(${field}, time_parse("${val[1]}")))`;
+          return `(${field} >= '${normalizeDate(val[0])}' AND ${field} <= '${normalizeDate(val[1])}')`;
+        default:
+          throw new Error(`Unsupported date operator: ${op}`);
       }
     }
     case DataTypes.Array: {

@@ -1,16 +1,13 @@
-import { Database } from "bun:sqlite";
+import { Database } from "./driver";
 import { OptimaDB } from "./database";
 import {
   applyFormatIn,
   applyFormatOut,
   buildFormatter,
   ExtendTables,
-  FieldReferenceMany,
-  FieldToSQL,
   FieldTypes,
   GetType,
   InsertInput,
-  OptimaField,
   OptimaTable,
   TableToSQL,
   TypeChecker,
@@ -26,7 +23,7 @@ export class OptimaTB<
   N extends string = string
 > {
   private Name: N;
-  private InternalDBReference: Database;
+  private InternalDBReference: typeof Database;
   private InternalOptimaDBReference: OptimaDB<S>;
   private isHybrid: boolean;
   private Schema: T;
@@ -48,6 +45,8 @@ export class OptimaTB<
   > = new Map();
   private InsertQCache = new Map();
   private SelectQCache = new Map();
+  private UpdateQCache = new Map();
+  private DeleteQCache = new Map();
   private compiledSchema: {
     key: string;
     type: FieldTypes;
@@ -58,7 +57,7 @@ export class OptimaTB<
   }[] = [];
 
   constructor(
-    InternalDB: Database,
+    InternalDB: typeof Database,
     TableName: N,
     SchemaTable: T,
     TablesToCompute: S,
@@ -95,6 +94,7 @@ export class OptimaTB<
   }
   private InitTable(Tables: S) {
     this.InternalDBReference.query(TableToSQL(this.Schema, this.Name)).run();
+    MigrateTable(this, this.Schema);
     for (const tableName of Object.keys(Tables)) {
       if (tableName === this.Name) continue;
       const tableSchema = (Tables as Record<string, any>)[tableName];
@@ -116,6 +116,8 @@ export class OptimaTB<
     }
     this.CompileInsertQuerries();
     this.CompileSchema();
+    this.CompileUpdateQuerries();
+    this.CompileDeleteQuerries();
   }
   private CompileSchema() {
     this.compiledSchema = Object.entries(this.Schema).map(([key, field]) => ({
@@ -162,6 +164,42 @@ export class OptimaTB<
     });
 
     this.InsertQCache = InsertQ;
+  }
+  private CompileUpdateQuerries() {
+    // Prepare and cache update statements for all possible column combinations
+    // Key: columns sorted, joined by ',' + where string + (Returning ? "-R" : "")
+    this.UpdateQCache = new Map();
+    const Keys = Object.keys(this.Schema);
+
+    // Helper: generate all non-empty subsets
+    const subsets = (arr: string[]) => {
+      const result: string[][] = [];
+      const n = arr.length;
+      for (let mask = 1; mask < 1 << n; mask++) {
+        const subset: string[] = [];
+        for (let i = 0; i < n; i++) {
+          if (mask & (1 << i)) subset.push(arr[i]);
+        }
+        result.push(subset);
+      }
+      return result;
+    };
+
+    const allCombos = subsets(Keys);
+
+    // We can't cache for all possible WHEREs, but we can cache for all possible SETs
+    allCombos.forEach((cols) => {
+      // We'll use a placeholder for WHERE, and replace it at runtime
+      const setParts = cols.map((col) => `"${col}" = ?`).join(", ");
+      // We'll cache the SET part, and at runtime, append the WHERE and RETURNING
+      const key = cols.sort().join(",");
+      this.UpdateQCache.set(key, setParts);
+    });
+  }
+  private CompileDeleteQuerries() {
+    // Cache delete statements for each unique WHERE clause (stringified)
+    // Key: whereBuilt + (Returning ? "-R" : "")
+    this.DeleteQCache = new Map();
   }
   Get = <Ext extends ExtendTables<T, S> | Array<ExtendTables<T, S>>>(
     where?: WhereInput<T>,
@@ -296,116 +334,6 @@ export class OptimaTB<
 
     return mappedRow as GetType<T, Ext, S>;
   };
-  Upsert = (Values: InsertInput<T>): GetType<T, null, S> => {
-    const cols = this.Schema;
-
-    // Runtime validation: ensure all NOT NULL fields are present and non-null
-    for (const key of Object.keys(cols)) {
-      const field = cols[key] as OptimaField<any, any, any>;
-      const valueProvided = Object.prototype.hasOwnProperty.call(Values, key);
-      const notNull = field["NotNull"];
-
-      if (
-        field["Type"] == FieldTypes.UUID &&
-        field["Default"] == undefined &&
-        valueProvided == false
-      ) {
-        Values[key] = Bun.randomUUIDv7();
-      }
-      if (field["Type"] == FieldTypes.Password && valueProvided) {
-        Values[key] = Bun.password.hashSync(Values[key], "bcrypt");
-      }
-      if (
-        field["Type"] == FieldTypes.Password &&
-        !valueProvided &&
-        !field["NotNull"]
-      ) {
-        Values[key] = null;
-      }
-      if (notNull) {
-        if (!valueProvided) {
-          throw new Error(
-            `Missing required field: ${String(key)} on insert into ${this.Name}`
-          );
-        }
-        if (
-          (Values as any)[key] === null ||
-          (Values as any)[key] === undefined
-        ) {
-          throw new Error(
-            `Field ${String(
-              key
-            )} is NOT NULL and must be provided with a non-null value in ${
-              this.Name
-            }`
-          );
-        }
-      }
-    }
-
-    // TypeChecker
-    for (const [key, val] of Object.entries(Values)) {
-      const field = cols[key] as OptimaField<any, any, any>;
-      const fieldType = field["Type"];
-      const isValid = TypeChecker(val, fieldType);
-      if (!isValid && val) {
-        throw new Error("`" + val + "` is not a valid " + fieldType);
-      }
-      if (field["Check"] != undefined) {
-        const checkPass = field["Check"](val);
-        if (!checkPass) {
-          throw new Error(
-            "`" + val + "` failed to satisfy the check function in field " + key
-          );
-        }
-      }
-    }
-
-    const columns = Object.keys(Values as unknown as Record<string, unknown>);
-    const placeholders = columns.map(() => "?").join(", ");
-
-    // pick conflict target (prefer primary key if defined, otherwise unique index)
-    const conflictCols = Object.keys(cols).filter(
-      (k) => (cols[k] as any)["PrimaryKey"] || (cols[k] as any)["Unique"]
-    );
-    if (conflictCols.length === 0) {
-      throw new Error(
-        `No PRIMARY KEY or UNIQUE constraint found in ${this.Name}, UPSERT not possible`
-      );
-    }
-
-    // generate DO UPDATE SET col = excluded.col for all updatable fields
-    const updateSet = columns
-      .filter((col) => !conflictCols.includes(col)) // don’t overwrite PK
-      .map((col) => `"${col}" = excluded."${col}"`)
-      .join(", ");
-
-    const sql = `
-      INSERT INTO "${this.Name}" (${columns.map((c) => `"${c}"`).join(", ")})
-      VALUES (${placeholders})
-      ON CONFLICT (${conflictCols.map((c) => `"${c}"`).join(", ")})
-      DO UPDATE SET ${updateSet}
-      RETURNING *;
-    `;
-
-    const stmt = this.InternalDBReference.prepare(sql);
-
-    const formattedValues = columns.map((col) => {
-      const field = cols[col];
-      const raw = (Values as any)[col];
-      if (field) {
-        return applyFormatIn(field, raw);
-      }
-      return raw;
-    });
-    const res = stmt.get(...formattedValues);
-
-    if (this.isHybrid && this.ChangeEvent) {
-      this.ChangeEvent.emit("Change");
-    }
-
-    return this.mapOutRow(res);
-  };
   Insert = (
     Values: InsertInput<T>,
     Returning?: boolean
@@ -420,9 +348,6 @@ export class OptimaTB<
             `Field "${f.key}" is NOT NULL and must be provided in ${this.Name}`
           );
         }
-      }
-      if (this.Schema[f.key]["Type"] == FieldTypes.Password && provided) {
-        Values[f.key] = Bun.password.hashSync(Values[f.key], "bcrypt");
       }
       // Type & check validation
       if (provided) {
@@ -482,52 +407,22 @@ export class OptimaTB<
   };
   Update = (
     values: UpdateChanges<T>,
-    where?: WhereInput<T>
+    where?: WhereInput<T>,
+    Returning?: boolean
   ): GetType<T, null, S>[] => {
-    const cols = this.Schema;
-
-    // For updates, if a NOT NULL field is explicitly set to null, block it
-    for (const key of Object.keys(values)) {
-      const field = (this.Schema as any)[key] as OptimaField<any, any, any> & {
-        isNotNullField?: () => boolean;
-      };
-      if (field?.isNotNullField?.() && (values as any)[key] === null) {
-        throw new Error(
-          `Field ${String(key)} is NOT NULL and cannot be set to null in ${
-            this.Name
-          }`
-        );
-      }
-    }
-
-    // Type checking and validation (same as Insert method)
-    for (const [key, val] of Object.entries(values)) {
-      const field = cols[key] as OptimaField<any, any, any>;
-      if (!field) continue; // Skip if field doesn't exist in schema
-
-      // Handle password field hashing
-      if (
-        field["Type"] == FieldTypes.Password &&
-        val !== null &&
-        val !== undefined
-      ) {
-        (values as any)[key] = Bun.password.hashSync(val, "bcrypt");
-      }
-
-      // Type checking
-      const fieldType = field["Type"];
-      const isValid = TypeChecker(val, fieldType);
-      if (!isValid) {
-        throw new Error("`" + val + "` is not a valid " + fieldType);
-      }
-
-      // Check function validation
-      if (field["Check"] != undefined) {
-        const checkPass = field["Check"](val);
-        if (!checkPass) {
+    for (const f of this.compiledSchema) {
+      if (Object.prototype.hasOwnProperty.call(values, f.key)) {
+        const val = (values as any)[f.key];
+        if (f.notNull && val === null) {
           throw new Error(
-            "`" + val + "` failed to satisfy the check function in field " + key
+            `Field "${f.key}" is NOT NULL and cannot be set to null in ${this.Name}`
           );
+        }
+        if (!TypeChecker(val, f.type)) {
+          throw new Error(`"${val}" is not a valid ${f.type}`);
+        }
+        if (f.check && !f.check(val)) {
+          throw new Error(`"${val}" failed custom check in field "${f.key}"`);
         }
       }
     }
@@ -535,40 +430,83 @@ export class OptimaTB<
     const columns = Object.keys(values);
     if (columns.length === 0) return { changes: 0 } as any;
 
-    const setParts: string[] = [];
-    const setParams: any[] = [];
-    for (const col of columns) {
-      const field = (this.Schema as any)[col];
-      const raw = values[col];
-      const formatted = field ? applyFormatIn(field, raw) : raw;
-      setParts.push(`"${col}" = ?`);
-      setParams.push(formatted);
+    const formattedValues = columns.map((col) => {
+      const field = this.Schema[col];
+      return field ? applyFormatIn(field, values[col]) : values[col];
+    });
+
+    const sortedCols = columns.slice().sort();
+    const setKey = sortedCols.join(",");
+    const setParts = this.UpdateQCache.get(setKey);
+    if (!setParts) {
+      throw new Error(
+        `No prepared SET clause found for columns: ${columns.join(
+          ", "
+        )}. This usually indicates a schema mismatch.`
+      );
     }
 
-    const whereBuilt = BuildCond(where != undefined ? where : {}, this.Schema);
-    const sql = `UPDATE "${this.Name}" SET ${setParts.join(
-      ", "
-    )}${whereBuilt} RETURNING *`;
-    const stmt = this.InternalDBReference.prepare(sql);
-    const res = stmt.all(...setParams);
-    if (this.isHybrid) {
+    const whereBuilt = BuildCond(where ?? {}, this.Schema);
+
+    const sql =
+      `UPDATE "${this.Name}" SET ${setParts}` +
+      ` WHERE ${whereBuilt}` +
+      (Returning ? " RETURNING *" : "");
+    const stmtCacheKey = setKey + "|" + whereBuilt + (Returning ? "-R" : "");
+    let stmt = this.UpdateQCache.get(stmtCacheKey);
+    if (!stmt) {
+      stmt = this.InternalDBReference.prepare(sql);
+      this.UpdateQCache.set(stmtCacheKey, stmt);
+    }
+
+    const res = Returning
+      ? stmt.all(
+          ...formattedValues.filter((e) => {
+            return e != undefined;
+          })
+        )
+      : stmt.run(
+          ...formattedValues.filter((e) => {
+            return e != undefined;
+          })
+        );
+
+    if (this.isHybrid && this.ChangeEvent) {
       this.ChangeEvent.emit("Change");
     }
-    return res.map((e: any) => {
-      return this.mapOutRow(e);
-    });
+
+    return Returning
+      ? Array.isArray(res)
+        ? res.map((e: any) => this.mapOutRow(e))
+        : []
+      : res;
   };
-  Delete = (where?: WhereInput<T>) => {
+  Delete = (where?: WhereInput<T>, Returning?: boolean) => {
     const whereBuilt = BuildCond(where != undefined ? where : {}, this.Schema);
-    const sql = `DELETE FROM "${this.Name}"${whereBuilt} RETURNING *`;
-    const stmt = this.InternalDBReference.prepare(sql);
-    const res = stmt.all();
-    if (this.isHybrid) {
+    const cacheKey = whereBuilt + (Returning ? "-R" : "");
+    let stmt = this.DeleteQCache.get(cacheKey);
+
+    // Compose SQL
+    const sql =
+      `DELETE FROM "${this.Name}" WHERE ${whereBuilt}` +
+      (Returning ? " RETURNING *" : "");
+
+    if (!stmt) {
+      stmt = this.InternalDBReference.prepare(sql);
+      this.DeleteQCache.set(cacheKey, stmt);
+    }
+
+    let res = Returning ? stmt.all() : stmt.run();
+
+    if (this.isHybrid && this.ChangeEvent) {
       this.ChangeEvent.emit("Change");
     }
-    return res.map((e: any) => {
-      return this.mapOutRow(e);
-    });
+
+    return Returning
+      ? Array.isArray(res)
+        ? res.map((e: any) => this.mapOutRow(e))
+        : []
+      : res;
   };
   Count = (where?: WhereInput<T>) => {
     const clause = BuildCond(where != undefined ? where : {}, this.Schema);
@@ -587,3 +525,118 @@ export class OptimaTB<
     return result;
   };
 }
+
+export const MigrateTable = (
+  Table: OptimaTB<any, any>,
+  Schema: OptimaTable<Record<string, any>>
+) => {
+  const pragmaStmt = `PRAGMA table_info("${Table["Name"]}")`;
+  const OldSchema = Table["InternalDBReference"]
+    .query(pragmaStmt)
+    .all()
+    .map((col: any) => {
+      return {
+        Name: col.name,
+        Type: col.type,
+        NotNull: col.notnull == 1,
+        PrimaryKey: col.pk == 1,
+        Default: col.dflt_value,
+      };
+    });
+  const NewKeys = Schema;
+  // Find new columns (in NewKeys but not in OldSchema)
+  const oldNames = OldSchema.map((col) => col.Name);
+  const newNames = Object.keys(NewKeys);
+
+  const Conflicts = {
+    New: newNames.filter((name) => !oldNames.includes(name)),
+    Updated: newNames.filter((name) => {
+      const oldCol = OldSchema.find((col) => col.Name === name);
+      if (!oldCol) return false;
+      const newCol = NewKeys[name];
+      const typeChanged =
+        (oldCol.Type || "").toLowerCase() !== (newCol.Type || "").toLowerCase();
+      const notNullChanged = !!oldCol.NotNull !== !!newCol.NotNull;
+      const pkChanged = !!oldCol.PrimaryKey !== !!newCol.PrimaryKey;
+      let defaultChanged = false;
+      if (oldCol.Default === null || oldCol.Default === undefined) {
+        defaultChanged =
+          newCol.Default !== undefined && newCol.Default !== null;
+      } else {
+        defaultChanged = String(oldCol.Default) !== String(newCol.Default);
+      }
+      return typeChanged || notNullChanged || pkChanged; //|| defaultChanged;
+    }),
+    Deleted: oldNames.filter((name) => !newNames.includes(name)),
+  };
+  // Solve Conflicts
+  // If there are no changes, return early
+  if (
+    Conflicts.New.length === 0 &&
+    Conflicts.Updated.length === 0 &&
+    Conflicts.Deleted.length === 0
+  ) {
+    return;
+  }
+
+  // 1. Get all rows from the old table
+  const allRows = Table["InternalDBReference"]
+    .query(`SELECT * FROM "${Table["Name"]}"`)
+    .all();
+
+  // 2. Build new schema SQL
+  //    - Only include columns that are in the new schema (ignore deleted)
+  //    - Use FieldToSQL to get column definitions
+  const { FieldToSQL } = require("./schema");
+  const newCols = Object.keys(NewKeys);
+  const colDefs = newCols.map((col) => {
+    return `"${col}" ${FieldToSQL(NewKeys[col])}`;
+  });
+  const tempTableName = `__tmp_${Table["Name"]}_${Date.now()}`;
+
+  // 3. Create a new temp table with the new schema
+  Table["InternalDBReference"].exec(
+    `CREATE TABLE "${tempTableName}" (${colDefs.join(", ")})`
+  );
+
+  // 4. Insert old data into the new table
+  for (const row of allRows) {
+    const insertCols = [];
+    const insertVals = [];
+    for (const col of newCols) {
+      if (row.hasOwnProperty(col)) {
+        insertCols.push(`"${col}"`);
+        insertVals.push(row[col]);
+      } else {
+        // New column: use default if available, else null
+        if (
+          NewKeys[col] &&
+          Object.prototype.hasOwnProperty.call(NewKeys[col], "Default")
+        ) {
+          insertCols.push(`"${col}"`);
+          insertVals.push(NewKeys[col].Default);
+        } else {
+          insertCols.push(`"${col}"`);
+          insertVals.push(null);
+        }
+      }
+    }
+    const placeholders = insertVals.map(() => "?").join(", ");
+    Table["InternalDBReference"]
+      .prepare(
+        `INSERT INTO "${tempTableName}" (${insertCols.join(
+          ", "
+        )}) VALUES (${placeholders})`
+      )
+      .run(insertVals);
+  }
+
+  // 5. Drop the old table
+  Table["InternalDBReference"].exec(`DROP TABLE "${Table["Name"]}"`);
+
+  // 6. Rename the temp table to the original name
+  Table["InternalDBReference"].exec(
+    `ALTER TABLE "${tempTableName}" RENAME TO "${Table["Name"]}"`
+  );
+
+};

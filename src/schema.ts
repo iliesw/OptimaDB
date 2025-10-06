@@ -35,77 +35,93 @@ export type GetType<
 export type OptimaFieldToTS<F extends OptimaField<any, any, any>> =
   F extends OptimaField<infer K, any, any> ? K : never;
 
-// Type-specific where operators based on field type
-export type WhereOperatorObject<T> = T extends number
-  ? {
-      $eq?: T;
-      $ne?: T | null;
-      $gt?: T;
-      $gte?: T;
-      $lt?: T;
-      $lte?: T;
-      $in?: T[];
-      $nin?: T[];
-      $is?: null | "null" | "not-null";
-      $not?: WhereOperatorObject<T> | T | T[] | null;
-    }
-  : T extends string
-  ? {
-      $eq?: T;
-      $ne?: T | null;
-      $like?: string;
-      $in?: T[];
-      $nin?: T[];
-      $is?: null | "null" | "not-null";
-      $not?: WhereOperatorObject<T> | T | T[] | null;
-    }
-  : T extends boolean
-  ? {
-      $eq?: T;
-      $ne?: T | null;
-      $is?: null | "null" | "not-null";
-      $not?: WhereOperatorObject<T> | T | null;
-    }
-  : T extends Date
-  ? {
-      $eq?: T;
-      $ne?: T | null;
-      $gt?: T;
-      $gte?: T;
-      $lt?: T;
-      $lte?: T;
-      $in?: T[];
-      $nin?: T[];
-      $is?: null | "null" | "not-null";
-      $not?: WhereOperatorObject<T> | T | T[] | null;
-    }
-  : T extends any[]
-  ? {
-      $eq?: T;
-      $ne?: T | null;
-      $in?: T[];
-      $nin?: T[];
-      $includes?: T extends (infer U)[] ? U : T;
-      $is?: null | "null" | "not-null";
-      $not?: WhereOperatorObject<T> | T | T[] | null;
-    }
-  : T extends Record<string, any>
-  ? {
-      $eq?: T;
-      $ne?: T | null;
-      $in?: T[];
-      $nin?: T[];
-      $is?: null | "null" | "not-null";
-      $not?: WhereOperatorObject<T> | T | T[] | null;
-    }
-  : {
-      $eq?: T;
-      $ne?: T | null;
-      $is?: null | "null" | "not-null";
-      $not?: WhereOperatorObject<T> | T | null;
-    };
+// Type-specific where operators based on field type, matching src/types.ts WhereOps
+export type WhereOperatorObject<T> =
+  // Numbers (int, float)
+  T extends number
+    ? {
+        $eq?: T;
+        $ne?: T | null;
+        $gt?: T;
+        $gte?: T;
+        $lt?: T;
+        $lte?: T;
+        $in?: T[];
+        $nin?: T[];
+        $is?: null | "null" | "not-null";
+        $not?: WhereOperatorObject<T> | T | T[] | null;
+      }
+    : // Boolean
+    T extends boolean
+    ? {
+        $eq?: T;
+        $ne?: T | null;
+        $is?: null | "null" | "not-null";
+        $not?: WhereOperatorObject<T> | T | null;
+      }
+    : // Text
+    T extends string
+    ? {
+        $eq?: T;
+        $ne?: T | null;
+        $like?: string;
+        $in?: T[];
+        $nin?: T[];
+        $include?: string;
+        $is?: null | "null" | "not-null";
+        $not?: WhereOperatorObject<T> | T | T[] | null;
+      }
+    : // Date
+    T extends Date
+    ? {
+        $eq?: T;
+        $ne?: T | null;
+        $before?: T;
+        $ebefore?: T;
+        $after?: T;
+        $eafter?: T;
+        $between?: [T, T];
+        $is?: null | "null" | "not-null";
+        $not?: WhereOperatorObject<T> | T | T[] | null;
+      }
+    : // Array
+    T extends any[]
+    ? {
+        $include?: T extends (infer U)[] ? U : never;
+        $len?: number;
+        $eq?: T;
+        $ne?: T | null;
+        $at?: number;
+        $index?: number;
+        $in?: T[];
+        $nin?: T[];
+        $is?: null | "null" | "not-null";
+        $not?: WhereOperatorObject<T> | T | T[] | null;
+      }
+    : // JSON
+    T extends object
+    ? {
+        $eq?: T;
+        $ne?: T | null;
+        $in?: T[];
+        $nin?: T[];
+        $hasKey?: string;
+        $hasValue?: any;
+        $contains?: any;
+        $is?: null | "null" | "not-null";
+        $not?: WhereOperatorObject<T> | T | T[] | null;
+      }
+    : // Fallback
+      {
+        $eq?: T;
+        $ne?: T | null;
+        $is?: null | "null" | "not-null";
+        $not?: WhereOperatorObject<T> | T | null;
+      };
 
-export type ColumnWhere<T> = T | null | T[] | WhereOperatorObject<T>;
+export type ColumnWhere<T> = T extends Date
+  ? WhereOperatorObject<T>
+  : T | null | T[] | WhereOperatorObject<T>;
 export type BasicWhere<TDef extends OptimaTable<Record<string, any>>> = {
   [K in keyof TDef as K extends "__tableName" ? never : K]?: ColumnWhere<
     OptimaFieldToTS<TDef[K]>
@@ -303,11 +319,7 @@ export const TypeChecker = (value: any, FieldType: FieldTypes) => {
       return typeof value === "number" && Number.isInteger(value);
     }
     case FieldTypes.Float: {
-      return (
-        typeof value === "number" &&
-        !Number.isNaN(value) &&
-        !Number.isInteger(value)
-      );
+      return typeof value === "number";
     }
     case FieldTypes.DateTime: {
       return new Date(value).toString() !== "Invalid Date";
@@ -373,32 +385,32 @@ export const FieldToSQL = (field: OptimaField<any, any, any>): string => {
       break;
     }
     case FieldTypes.DateTime: {
-      if(field["Default"] != null){
-        if(field["Default"] instanceof Date){
+      if (field["Default"] != null) {
+        if (field["Default"] instanceof Date) {
           defVal = `CURRENT_TIMESTAMP`;
-        }else{
+        } else {
           defVal = `'${field["Default"]}'`;
         }
         //
       }
       break;
     }
-    case FieldTypes.UUID:{
+    case FieldTypes.UUID: {
       defVal = `(uuid7())`;
       break;
     }
-    default:{
-      if(field["Default"]!=null && typeof field["Default"]=="string"){
+    default: {
+      if (field["Default"] != null && typeof field["Default"] == "string") {
         defVal = `'${field["Default"].replace(/'/g, "''")}'`;
-      }else{
+      } else {
         defVal = String(field["Default"]);
       }
     }
   }
-  if(defVal!="null"){
+  if (defVal != "null") {
     parts.push(`DEFAULT ${defVal}`);
   }
-  
+
   const ref = field["Reference"] as
     | {
         Table: OptimaTable<any> | string;
@@ -453,12 +465,14 @@ type Formatter = (value: any) => any;
 export function buildFormatter(type: FieldTypes): Formatter {
   switch (type) {
     case FieldTypes.Boolean:
-      return (v) => (v == null ? v : (v ? 1 : 0));
+      return (v) => (v == null ? v : v ? 1 : 0);
     case FieldTypes.Json:
     case FieldTypes.Array:
-      return (v) => (v == null ? v : (typeof v === "string" ? v : JSON.stringify(v)));
+      return (v) =>
+        v == null ? v : typeof v === "string" ? v : JSON.stringify(v);
     case FieldTypes.DateTime:
-      return (v) => (v == null ? v : (v instanceof Date ? v.toISOString() : String(v)));
+      return (v) =>
+        v == null ? v : v instanceof Date ? v.toISOString() : String(v);
 
     default:
       return (v) => v;

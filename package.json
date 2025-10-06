@@ -1,6 +1,6 @@
 {
   "name": "@inflector/db",
-  "version": "1.8.14",
+  "version": "2.0.4",
   "author": "Inflector",
   "main": "./dist/index.js",
   "module": "./dist/index.js",
@@ -19,15 +19,10 @@
     },
     "./package.json": "./package.json"
   },
-  "typesVersions": {
-    "*": {
-      ".": ["./dist/index.d.ts"],
-      "schema": ["./dist/schema.d.ts"]
-    }
-  },
   "files": [
     "dist",
     "Extentions",
+    "wa-sqlite",
     "README.md",
     "LICENSE"
   ],
@@ -37,6 +32,15 @@
     "prepublishOnly": "bun run build"
   },
   "type": "module",
-  "types": "./dist/index.d.ts"
-
+  "types": "./dist/index.d.ts",
+  "typesVersions": {
+    "*": {
+      ".": ["./dist/index.d.ts"],
+      "schema": ["./dist/schema.d.ts"]
+    }
+  },
+  "dependencies": {
+    "@magieno/sqlite-client": "^3.45.1-build5-with-extension-support",
+    "better-sqlite3": "^12.4.1"
+  }
 }

@@ -1,8 +1,8 @@
-import { Database } from "bun:sqlite";
+import { Database } from "./driver";
 import type { OptimaTable } from "./schema";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { OptimaTB } from "./table";
+import {  OptimaTB } from "./table";
 import { resolve } from "path";
 
 export type OptimaTablesFromSchema<
@@ -11,9 +11,51 @@ export type OptimaTablesFromSchema<
   [K in keyof S]: OptimaTB<S[K], any>;
 };
 
+// Patch prepare once
+
+function normalizeParams(params?: any) {
+  if (!Array.isArray(params)) return params;
+  return params.map(p => {
+    if (p instanceof Date) return p.toISOString(); // or p.getTime()
+    if (p === undefined) return null;
+    return p;
+  });
+}
+
+
+const oldPrepare = Database.prototype.prepare;
+Database.prototype.prepare = function (sql: string) {
+  const stmt = oldPrepare.call(this, sql);
+
+  const oldAll = stmt.all;
+  stmt.all = (...params: any[]) => {
+    const norm = params.length === 1 && Array.isArray(params[0])
+      ? normalizeParams(params[0])       // case: stmt.all([a,b,c])
+      : normalizeParams(params);         // case: stmt.all(a,b,c)
+    return oldAll.call(stmt, norm);
+  };
+
+  const oldRun = stmt.run;
+  stmt.run = (...params: any[]) => {
+    const norm = params.length === 1 && Array.isArray(params[0])
+      ? normalizeParams(params[0])
+      : normalizeParams(params);
+    return oldRun.call(stmt, norm);
+  };
+
+  const oldGet = stmt.get;
+  stmt.get = (...params: any[]) => {
+    const norm = params.length === 1 && Array.isArray(params[0])
+      ? normalizeParams(params[0])
+      : normalizeParams(params);
+    return oldGet.call(stmt, norm);
+  };
+
+  return stmt;
+};
 export class OptimaDB<S extends Record<string, OptimaTable<any>>> {
   private Path: string = "";
-  private InternalDB: Database;
+  private InternalDB: typeof Database;
   public Tables: {
     [K in keyof S]: OptimaTB<S[K], S, K & string>;
   };
@@ -54,59 +96,6 @@ export class OptimaDB<S extends Record<string, OptimaTable<any>>> {
         this.InternalDB = new Database(":memory:");
         break;
       }
-      // case "Hybrid": {
-      //   this.Mode = "Hybrid";
-      //   this.Path = options.path;
-      //   this.LoadFromDisk();
-      //   this.InternalDB.exec("PRAGMA journal_mode = WAL;");
-      //   this.InternalDB.exec("PRAGMA synchronous = NORMAL;"); // balance speed + durability
-      //   this.InternalDB.exec("PRAGMA temp_store = MEMORY;"); // faster temp tables
-      //   this.InternalDB.exec("PRAGMA mmap_size = 30000000000;"); // optional: use mmap for reads
-      //   this.InternalDB.exec("PRAGMA cache_size = 100000;");
-      //   this.InternalDB.exec("PRAGMA locking_mode = EXCLUSIVE;");
-      //   this.InternalDB.exec("PRAGMA automatic_index = ON;");
-
-      //   const saveHandler = () => {
-      //     try {
-      //       this.SaveToDisk();
-      //     } catch (e) {
-      //       console.error("Error saving database on signal:", e);
-      //     }
-      //   };
-
-      //   const signals = [
-      //     "exit",
-      //     "SIGINT",
-      //     "SIGTERM",
-      //     "SIGQUIT",
-      //     "SIGHUP",
-      //     "uncaughtException",
-      //     "unhandledRejection",
-      //   ];
-
-      //   for (const sig of signals) {
-      //     if (sig === "exit") {
-      //       process.once(sig, () => {
-      //         saveHandler();
-      //       });
-      //     } else if (
-      //       sig === "uncaughtException" ||
-      //       sig === "unhandledRejection"
-      //     ) {
-      //       process.once(sig, (err) => {
-      //         saveHandler();
-      //         console.error(`Process ${sig}:`, err);
-      //         process.exit(1);
-      //       });
-      //     } else {
-      //       process.once(sig, () => {
-      //         saveHandler();
-      //         process.exit(0);
-      //       });
-      //     }
-      //   }
-      //   break;
-      // }
     }
     this.InternalDB.exec("PRAGMA journal_mode = WAL;");
     this.InternalDB.exec("PRAGMA synchronous = NORMAL;"); // balance speed + durability
@@ -130,8 +119,6 @@ export class OptimaDB<S extends Record<string, OptimaTable<any>>> {
         options.mode == "Hybrid"
       ) as any;
     }
-
-    // Tables are automatically initialized with schema creation in InitTable method
   }
 
   Batch = (fn: Function) => {
