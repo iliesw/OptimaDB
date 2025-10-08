@@ -1,4 +1,4 @@
-import { OptimaDB, TableToSQL } from "@inflector/db";
+import { OptimaDB, TableToSQL } from "./../src";
 import * as Schema from "./schema";
 console.log("\n\n\nInsert : ");
 const DB = new OptimaDB(Schema);

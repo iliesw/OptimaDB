@@ -240,7 +240,7 @@ export class OptimaTB<
 
     const sql = `${selectPrefix} FROM "${this.Name}" ${clause} ${orderClause} ${limitClause}`;
     let stmt = this.SelectQCache.get(sql);
-
+    console.log(sql)
     if (!stmt) {
       stmt = this.InternalDBReference.query(sql);
       this.SelectQCache.set(sql, stmt);
@@ -511,7 +511,7 @@ export class OptimaTB<
   Count = (where?: WhereInput<T>) => {
     const clause = BuildCond(where != undefined ? where : {}, this.Schema);
     const row = this.InternalDBReference.query(
-      `SELECT COUNT(*) as count FROM "${this.Name}"${clause}`
+      `SELECT COUNT(*) as count FROM "${this.Name}" WHERE ${clause}`
     ).get() as { count: number };
     return row ? row.count : 0;
   };

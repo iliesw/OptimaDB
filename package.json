@@ -1,6 +1,6 @@
 {
   "name": "@inflector/db",
-  "version": "2.0.4",
+  "version": "2.2.0",
   "author": "Inflector",
   "main": "./dist/index.js",
   "module": "./dist/index.js",
@@ -38,9 +38,5 @@
       ".": ["./dist/index.d.ts"],
       "schema": ["./dist/schema.d.ts"]
     }
-  },
-  "dependencies": {
-    "@magieno/sqlite-client": "^3.45.1-build5-with-extension-support",
-    "better-sqlite3": "^12.4.1"
   }
 }

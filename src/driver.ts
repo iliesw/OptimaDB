@@ -8,8 +8,8 @@ if (typeof window !== "undefined" && typeof window.document !== "undefined") {
     const { Database: BunDatabase } = require("bun:sqlite");
     Database = BunDatabase;
   } catch {
-    const { Database: NodeDatabase } = require("better-sqlite3");
-    Database = NodeDatabase;
+    // const { Database: NodeDatabase } = require("better-sqlite3");
+    // Database = NodeDatabase;
   }
 }
 

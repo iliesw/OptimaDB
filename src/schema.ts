@@ -387,7 +387,7 @@ export const FieldToSQL = (field: OptimaField<any, any, any>): string => {
     case FieldTypes.DateTime: {
       if (field["Default"] != null) {
         if (field["Default"] instanceof Date) {
-          defVal = `CURRENT_TIMESTAMP`;
+          defVal = `(strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))`;
         } else {
           defVal = `'${field["Default"]}'`;
         }
@@ -455,7 +455,7 @@ export function applyFormatIn(field: OptimaField<any, any>, value: any): any {
     case FieldTypes.Boolean:
       return value ? 1 : 0;
     case FieldTypes.DateTime:
-      return value instanceof Date ? value.toISOString() : String(value);
+      return new Date(value).getTime();
     default:
       return value;
   }
@@ -487,7 +487,7 @@ export function applyFormatOut(field: string, value: any): any {
     case "ARRAY":
       return JSON.parse(value);
     case "DATE":
-      return typeof value === "string" ? new Date(value) : value;
+      return new Date(value);
     default:
       return value;
   }

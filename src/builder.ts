@@ -9,7 +9,13 @@ const BuildCondField = <T extends DataTypes>(
   op: WhereOpFor<T>,
   val: any
 ) => {
-  const field = `\`${FieldName}\``
+  const field = `\`${FieldName}\``;
+  // Normalize NULL comparisons across all types
+  if (val === null) {
+    if (op === "$eq") return `${field} IS NULL`;
+    if (op === "$ne") return `${field} IS NOT NULL`;
+    throw new Error(`Unsupported operator ${op} for null value`);
+  }
   switch (Type) {
     case DataTypes.Float:
     case DataTypes.Int: {
@@ -83,10 +89,11 @@ const BuildCondField = <T extends DataTypes>(
       return `${field} ${T[op]} ${escapeStr(val)}`;
     }
     case DataTypes.Date: {
-      const normalizeDate = (v: Date) => {
-        return v.toISOString().split(".")[0] + "Z"; // remove milliseconds
+      const normalizeDate = (v: Date | string) => {
+        const DateOBJ = new Date(v);
+        return DateOBJ.toISOString();
       };
-    
+
       switch (op) {
         case "$eq":
           return `${field} = '${normalizeDate(val)}'`;
@@ -102,9 +109,13 @@ const BuildCondField = <T extends DataTypes>(
           return `${field} >= '${normalizeDate(val)}'`;
         case "$between":
           if (!Array.isArray(val) || val.length !== 2) {
-            throw new Error(`$between operator requires an array of two values`);
+            throw new Error(
+              `$between operator requires an array of two values`
+            );
           }
-          return `(${field} >= '${normalizeDate(val[0])}' AND ${field} <= '${normalizeDate(val[1])}')`;
+          return `(${field} >= '${normalizeDate(
+            val[0]
+          )}' AND ${field} <= '${normalizeDate(val[1])}')`;
         default:
           throw new Error(`Unsupported date operator: ${op}`);
       }
@@ -272,7 +283,7 @@ export const BuildCond = (CondObj, Schema) => {
       });
       return (ProcessedChildren as string[]).join(` AND `);
     } else if (node.type == "field") {
-      const isEQ = typeof node.cond != "object";
+      const isEQ = typeof node.cond != "object" || node.cond === null;
       if (isEQ) {
         return BuildCondField(
           Schema[node.field].Type,
@@ -305,5 +316,6 @@ export const BuildCond = (CondObj, Schema) => {
     }
   }
   const Result = processNode(condToGraph(CondObj));
-  return Result
+  return Result;
 };
+

@@ -1,12 +1,14 @@
-import { OptimaDB } from "./../src";
+import { OptimaDB, TableToSQL } from "./../src";
 import * as Schema from "./schema";
-const DB = new OptimaDB(Schema,{
-  mode:"Disk",
-  path:"a"
-});
+const DB = new OptimaDB(Schema);
 
+console.log(TableToSQL(Schema.Users,"a"))
 
-DB.Tables.Users.Get({
+console.log(DB.Tables.Users.Insert({
+  Email:"hello@p.com"
+},true))
+console.log(DB.Tables.Users.Get({
   Dates:{
+    $eafter:new Date(Date.now()-100)
   }
-})
+}))

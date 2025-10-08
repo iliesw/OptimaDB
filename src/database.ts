@@ -63,11 +63,39 @@ export class OptimaDB<S extends Record<string, OptimaTable<any>>> {
   private SchemaRef: S;
 
   private LoadExt = () => {
-    const Extentions = ["array.dll","time.dll","uuid.dll","vec.dll"]
-    Extentions.forEach(dll=>{
-      const extensionPath = resolve(__dirname, "./../Extentions/"+dll);
-      this.InternalDB.loadExtension(extensionPath);
-    })
+    const platform = process.platform;
+    let extFolder: string;
+    let extSuffix: string;
+
+    if (platform === "linux") {
+      extFolder = "linux";
+      extSuffix = ".so";
+    } else if (platform === "win32") {
+      extFolder = "win";
+      extSuffix = ".dll";
+    } else if (platform === "darwin") {
+      extFolder = "mac";
+      extSuffix = ".dylib";
+    } else {
+      throw new Error(`Unsupported platform: ${platform}`);
+    }
+
+    // Note: vec0 is present in the folder, but original code loads "vec"
+    // We'll load "vec" if present, otherwise "vec0" for compatibility
+    const extensions = ["array", "time", "uuid", "vec", "vec0"];
+    extensions.forEach(dll => {
+      const extensionPath = resolve(
+        __dirname,
+        `./../Extentions/${extFolder}/${dll}${extSuffix}`
+      );
+      // Only load if the file exists (vec0 is optional)
+      try {
+        this.InternalDB.loadExtension(extensionPath);
+      } catch (e) {
+        // Ignore missing vec/vec0, but throw for others
+        if (dll !== "vec" && dll !== "vec0") throw e;
+      }
+    });
   };
 
   constructor(
