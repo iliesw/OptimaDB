@@ -510,7 +510,9 @@ export class OptimaTB<
   Count = (where?: WhereInput<T>) => {
     const clause = BuildCond(where != undefined ? where : {}, this.Schema);
     const row = this.InternalDBReference.query(
-      `SELECT COUNT(*) as count FROM "${this.Name}" WHERE ${clause}`
+      `SELECT COUNT(*) as count FROM "${this.Name}" ${
+        clause != "" ? "WHERE " + clause : ""
+      }`
     ).get() as { count: number };
     return row ? row.count : 0;
   };
@@ -637,5 +639,4 @@ export const MigrateTable = (
   Table["InternalDBReference"].exec(
     `ALTER TABLE "${tempTableName}" RENAME TO "${Table["Name"]}"`
   );
-
 };

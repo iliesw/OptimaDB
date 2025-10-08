@@ -342,12 +342,9 @@ export const TypeChecker = (value: any, FieldType: FieldTypes) => {
       return Array.isArray(value);
     }
     case FieldTypes.Json: {
-      // Accept any object (including arrays), but not null, not Date, not primitive
       return (
         typeof value === "object" &&
-        value !== null &&
-        !(value instanceof Date) &&
-        !Array.isArray(value) // Only allow plain objects, not arrays
+        value !== null
       );
     }
     case FieldTypes.UUID: {
