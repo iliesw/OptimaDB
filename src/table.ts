@@ -240,7 +240,6 @@ export class OptimaTB<
 
     const sql = `${selectPrefix} FROM "${this.Name}" ${clause} ${orderClause} ${limitClause}`;
     let stmt = this.SelectQCache.get(sql);
-    console.log(sql)
     if (!stmt) {
       stmt = this.InternalDBReference.query(sql);
       this.SelectQCache.set(sql, stmt);
