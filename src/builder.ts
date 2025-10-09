@@ -283,7 +283,10 @@ export const BuildCond = (CondObj, Schema) => {
       });
       return (ProcessedChildren as string[]).join(` AND `);
     } else if (node.type == "field") {
-      const isEQ = typeof node.cond != "object" || node.cond === null;
+      const isEQ =
+        Schema[node.field].Type != "JSON"
+          ? typeof node.cond != "object" || node.cond === null
+          : typeof node.cond == "object";
       if (isEQ) {
         return BuildCondField(
           Schema[node.field].Type,
@@ -318,4 +321,3 @@ export const BuildCond = (CondObj, Schema) => {
   const Result = processNode(condToGraph(CondObj));
   return Result;
 };
-
