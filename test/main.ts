@@ -1,20 +1,16 @@
 import { OptimaDB, TableToSQL } from "./../src";
 import * as Schema from "./schema";
-const DB = new OptimaDB(Schema);
+const DB = new OptimaDB(Schema, {
+  mode: "Disk",
+  path: "a",
+});
 
-console.log(TableToSQL(Schema.Users, "a"));
-
-console.log(
-  DB.Tables.Users.Insert(
-    {
-      Email: "hello@p.com",
-      JSON: { f: 1, g: 2 },
-    },
-    true
-  )
-);
+const e = DB.Tables.Users.Insert({
+  Salary:50
+},true);
+console.log(e)
 console.log(
   DB.Tables.Users.Get({
-    JSON:{f:1,g:2},
+    Dates: e.Dates.toISOString(),
   })
 );

@@ -239,6 +239,7 @@ export class OptimaTB<
     }
 
     const sql = `${selectPrefix} FROM "${this.Name}" ${clause} ${orderClause} ${limitClause}`;
+    console.log(sql)
     let stmt = this.SelectQCache.get(sql);
     if (!stmt) {
       stmt = this.InternalDBReference.query(sql);
@@ -362,7 +363,6 @@ export class OptimaTB<
     const cacheKey =
       Object.keys(Values).sort().join(",") + (Returning ? "-R" : "");
     const stmt = this.InsertQCache.get(cacheKey);
-
     if (!stmt) {
       throw new Error(
         `No prepared statement found for columns: ${Object.keys(Values).join(

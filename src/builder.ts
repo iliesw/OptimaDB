@@ -3,7 +3,7 @@ import { DataTypes, WhereOpFor } from "./types";
 const escapeIdent = (name: string) => `"${name.replace(/"/g, '""')}"`; // safe for reserved words
 const escapeStr = (val: string) => `'${val.replace(/'/g, "''")}'`;
 
-const BuildCondField = <T extends DataTypes>(
+export const BuildCondField = <T extends DataTypes>(
   Type: T,
   FieldName: string,
   op: WhereOpFor<T>,
@@ -127,14 +127,14 @@ const BuildCondField = <T extends DataTypes>(
             throw new Error(`${val} should be a single value, not an array`);
           }
           const formatted = typeof val === "string" ? `'${val}'` : val;
-          return `array_contains(${field}, ${formatted}) = 1`;
+          return `EXISTS(SELECT 1 FROM json_each(${field}) WHERE value = ${formatted})`;
         }
 
         case "$len": {
           if (typeof val !== "number") {
             throw new Error(`${val} must be a number`);
           }
-          return `array_length(${field}) = ${val}`;
+          return `json_array_length(${field}) = ${val}`;
         }
 
         case "$eq": {
@@ -142,7 +142,7 @@ const BuildCondField = <T extends DataTypes>(
             const formatted = val
               .map((v) => (typeof v === "string" ? `'${v}'` : v))
               .join(", ");
-            return `${field} = array(${formatted})`;
+            return `${field} = json_array(${formatted})`;
           }
           throw new Error(`${val} must be an array for $eq`);
         }
@@ -152,7 +152,7 @@ const BuildCondField = <T extends DataTypes>(
             const formatted = val
               .map((v) => (typeof v === "string" ? `'${v}'` : v))
               .join(", ");
-            return `${field} != array(${formatted})`;
+            return `${field} != json_array(${formatted})`;
           }
           throw new Error(`${val} must be an array for $ne`);
         }
@@ -167,7 +167,8 @@ const BuildCondField = <T extends DataTypes>(
             }
             const formatted =
               typeof expected === "string" ? `'${expected}'` : expected;
-            return `array_at(${field}, ${index}) = ${formatted}`;
+            // SQLite's json_extract is 0-indexed
+            return `json_extract(${field}, '$[${index}]') = ${formatted}`;
           }
           throw new Error(`${val} must be [index, expectedValue] for $at`);
         }
@@ -181,7 +182,9 @@ const BuildCondField = <T extends DataTypes>(
               );
             }
             const formatted = typeof value === "string" ? `'${value}'` : value;
-            return `array_index(${field}, ${formatted}) = ${expectedIndex}`;
+            // COALESCE is used to return -1 if the value is not found,
+            // otherwise it returns the key (index).
+            return `COALESCE((SELECT key FROM json_each(${field}) WHERE value = ${formatted}), -1) = ${expectedIndex}`;
           }
           throw new Error(`${val} must be [value, expectedIndex] for $index`);
         }
@@ -283,10 +286,25 @@ export const BuildCond = (CondObj, Schema) => {
       });
       return (ProcessedChildren as string[]).join(` AND `);
     } else if (node.type == "field") {
-      const isEQ =
-        Schema[node.field].Type != "JSON"
-          ? typeof node.cond != "object" || node.cond === null
-          : typeof node.cond == "object";
+      // Use a switch statement for clarity
+      let isEQ: boolean;
+      const fieldType = Schema[node.field].Type;
+
+      switch (fieldType) {
+        case "JSON": {
+          isEQ = typeof node.cond === "object";
+          break;
+        }
+        case "ARRAY": {
+          isEQ = typeof node.cond === "object" && Array.isArray(node.cond);
+          break;
+        }
+        default: {
+          isEQ = typeof node.cond !== "object" || node.cond === null;
+          break;
+        }
+      }
+
       if (isEQ) {
         return BuildCondField(
           Schema[node.field].Type,

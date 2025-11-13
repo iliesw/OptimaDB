@@ -1,4 +1,5 @@
 export * from "./database"
+export * from "./builder"
 export * from "./driver"
 export * from "./table"
 export * from "./schema"

@@ -74,15 +74,21 @@ export type WhereOperatorObject<T> =
     : // Date
     T extends Date
     ? {
-        $eq?: T;
-        $ne?: T | null;
-        $before?: T;
-        $ebefore?: T;
-        $after?: T;
-        $eafter?: T;
-        $between?: [T, T];
+        $eq?: T | string;
+        $ne?: T | string | null;
+        $before?: T | string;
+        $ebefore?: T | string;
+        $after?: T | string;
+        $eafter?: T | string;
+        $between?: [T | string, T | string];
         $is?: null | "null" | "not-null";
-        $not?: WhereOperatorObject<T> | T | T[] | null;
+        $not?:
+          | WhereOperatorObject<T | string>
+          | T
+          | string
+          | T[]
+          | string[]
+          | null;
       }
     : // Array
     T extends any[]
@@ -91,8 +97,8 @@ export type WhereOperatorObject<T> =
         $len?: number;
         $eq?: T;
         $ne?: T | null;
-        $at?: number;
-        $index?: number;
+        $at?: number[];
+        $index?: number[];
         $in?: T[];
         $nin?: T[];
         $is?: null | "null" | "not-null";
@@ -119,8 +125,9 @@ export type WhereOperatorObject<T> =
         $not?: WhereOperatorObject<T> | T | null;
       };
 
+
 export type ColumnWhere<T> = T extends Date
-  ? WhereOperatorObject<T>
+  ? WhereOperatorObject<T> | string
   : T | null | T[] | WhereOperatorObject<T>;
 export type BasicWhere<TDef extends OptimaTable<Record<string, any>>> = {
   [K in keyof TDef as K extends "__tableName" ? never : K]?: ColumnWhere<
@@ -342,10 +349,7 @@ export const TypeChecker = (value: any, FieldType: FieldTypes) => {
       return Array.isArray(value);
     }
     case FieldTypes.Json: {
-      return (
-        typeof value === "object" &&
-        value !== null
-      );
+      return typeof value === "object" && value !== null;
     }
     case FieldTypes.UUID: {
       // Accept both UUID v4 and v7 (RFC 4122 and draft for v7)
